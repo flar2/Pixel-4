@@ -58,7 +58,7 @@ EXPORT_SYMBOL_GPL(msm_adreno_tz_notifiers);
 #define TAG "msm_adreno_tz: "
 
 #if 1
-static unsigned int adrenoboost = 1;
+static unsigned int adrenoboost = 0;
 #endif
 
 static u64 suspend_time;
