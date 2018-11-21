@@ -33,6 +33,7 @@
 #define BL_STATE_STANDBY	BL_CORE_FBBLANK
 #define BL_STATE_LP		BL_CORE_LP1
 #define BL_STATE_LP2		BL_CORE_LP2
+#define BL_HBM 			1023
 /*
  * Defining custom dsi msg flag,
  * continued from drm_mipi_dsi.h
