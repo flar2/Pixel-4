@@ -1354,7 +1354,7 @@ void rmnet_shs_init(struct net_device *dev, struct net_device *vnd)
 		map_len = 0;
 	} else {
 		map_mask = rmnet_shs_mask_from_map(map);
-		map_len = rmnet_shs_get_mask_len(rmnet_shs_cfg.map_mask);
+		map_len = rmnet_shs_get_mask_len(map_mask);
 	}
 
 	rmnet_shs_cfg.port = rmnet_get_port(dev);
@@ -1482,8 +1482,8 @@ void rmnet_shs_assign(struct sk_buff *skb, struct rmnet_port *port)
 	spin_lock_irqsave(&rmnet_shs_ht_splock, ht_flags);
 	do {
 		hash_for_each_possible_safe(RMNET_SHS_HT, node_p, tmp, list,
-					    skb->hash) {
-			if (skb->hash != node_p->hash)
+					    hash) {
+			if (hash != node_p->hash)
 				continue;
 
 
@@ -1496,6 +1496,7 @@ void rmnet_shs_assign(struct sk_buff *skb, struct rmnet_port *port)
 			rmnet_shs_chain_to_skb_list(skb, node_p);
 			is_match_found = 1;
 			is_shs_reqd = 1;
+			break;
 
 		}
 		if (is_match_found)
@@ -1562,15 +1563,6 @@ void rmnet_shs_assign(struct sk_buff *skb, struct rmnet_port *port)
 		return;
 	}
 
-	if (!rmnet_shs_cfg.is_reg_dl_mrk_ind) {
-		rmnet_map_dl_ind_register(port, &rmnet_shs_cfg.dl_mrk_ind_cb);
-		qmi_rmnet_ps_ind_register(port,
-					  &rmnet_shs_cfg.rmnet_idl_ind_cb);
-
-		rmnet_shs_cfg.is_reg_dl_mrk_ind = 1;
-		shs_rx_work.port = port;
-
-	}
 	/* We got the first packet after a previous successdul flush. Arm the
 	 * flushing timer.
 	 */
@@ -1649,9 +1641,6 @@ void rmnet_shs_assign(struct sk_buff *skb, struct rmnet_port *port)
 void rmnet_shs_exit(void)
 {
 	rmnet_shs_freq_exit();
-	qmi_rmnet_ps_ind_deregister(rmnet_shs_cfg.port,
-				    &rmnet_shs_cfg.rmnet_idl_ind_cb);
-
 	rmnet_shs_cfg.dl_mrk_ind_cb.dl_hdr_handler = NULL;
 	rmnet_shs_cfg.dl_mrk_ind_cb.dl_trl_handler = NULL;
 	rmnet_map_dl_ind_deregister(rmnet_shs_cfg.port,
@@ -1661,6 +1650,7 @@ void rmnet_shs_exit(void)
 		hrtimer_cancel(&rmnet_shs_cfg.hrtimer_shs);
 
 	memset(&rmnet_shs_cfg, 0, sizeof(rmnet_shs_cfg));
+	rmnet_shs_cfg.port = NULL;
 	rmnet_shs_cfg.rmnet_shs_init_complete = 0;
 
 }
