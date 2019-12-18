@@ -33,7 +33,7 @@
 #include <linux/hrtimer.h>
 
 /* Tunables */
-#define WG_DEBUG		1
+#define WG_DEBUG		0
 #define WG_DEFAULT		0
 #define DT2W_DEFAULT		0
 #define S2W_DEFAULT		0
