@@ -2145,7 +2145,8 @@ static void __exit gsb_exit_module(void)
 	{
 		__pm_relax(&pgsb_ctx->gsb_wake_src);
 	}
-	wakeup_source_trash(&pgsb_ctx->gsb_wake_src);
+	wakeup_source_remove(&pgsb_ctx->gsb_wake_src);
+	__pm_relax(&pgsb_ctx->gsb_wake_src);
 
 	gsb_debugfs_exit(pgsb_ctx);
 	gsb_ioctl_deinit();
