@@ -2014,7 +2014,7 @@ static int __init gsb_init_module(void)
 	pgsb_ctx->gsb_lock_acquired = false;
 
 
-	pgsb_ctx->gsb_wake_src = wakeup_source_register("gsb_wake_source");
+	pgsb_ctx->gsb_wake_src = wakeup_source_register(NULL, "gsb_wake_source");
 	if (!pgsb_ctx->gsb_wake_src) {
 		DEBUG_ERROR("wakeup source registration failed\n");
 		retval = -ENODEV;
