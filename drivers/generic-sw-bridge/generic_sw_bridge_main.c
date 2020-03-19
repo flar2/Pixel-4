@@ -236,7 +236,7 @@ static int suspend_all_bridged_interfaces(void)
 	if (pgsb_ctx->is_wake_src_acquired)
 	{
 		DEBUG_TRACE("relaxing wake src\n");
-		__pm_relax(&pgsb_ctx->gsb_wake_src);
+		__pm_relax(pgsb_ctx->gsb_wake_src);
 		pgsb_ctx->is_wake_src_acquired = false;
 	}
 	else
@@ -1520,7 +1520,7 @@ static int gsb_pm_handler(struct notifier_block *nb,
 		if (pgsb_ctx->do_we_need_wake_source && !pgsb_ctx->is_wake_src_acquired)
 		{
 			spin_lock_bh(&pgsb_ctx->gsb_wake_lock);
-			__pm_stay_awake(&pgsb_ctx->gsb_wake_src);
+			__pm_stay_awake(pgsb_ctx->gsb_wake_src);
 			DEBUG_INFO("Wake src acquired..will not suspend! if cnt %d, ref cnt %d\n",
 					pgsb_ctx->configured_if_count,
 					pgsb_ctx->wake_source_ref_count);
@@ -1539,7 +1539,7 @@ static int gsb_pm_handler(struct notifier_block *nb,
 		spin_lock_bh(&pgsb_ctx->gsb_wake_lock);
 		if (pgsb_ctx->is_wake_src_acquired)
 		{
-			__pm_relax(&pgsb_ctx->gsb_wake_src);
+			__pm_relax(pgsb_ctx->gsb_wake_src);
 			pgsb_ctx->is_wake_src_acquired = false;
 		}
 		spin_unlock_bh(&pgsb_ctx->gsb_wake_lock);
@@ -2014,7 +2014,13 @@ static int __init gsb_init_module(void)
 	pgsb_ctx->gsb_lock_acquired = false;
 
 
-	wakeup_source_init(&pgsb_ctx->gsb_wake_src, "gsb_wake_source");
+	pgsb_ctx->gsb_wake_src = wakeup_source_register("gsb_wake_source");
+	if (!pgsb_ctx->gsb_wake_src) {
+		DEBUG_ERROR("wakeup source registration failed\n");
+		retval = -ENODEV;
+		goto wakeup_source_register_failure;
+	}
+
 	pgsb_ctx->do_we_need_wake_source = false;
 	pgsb_ctx->is_wake_src_acquired = false;
 	pgsb_ctx->mem_alloc_if_ipa_context = 0;
@@ -2103,6 +2109,8 @@ failed_ioctl_initialization:
 failed_power_notification:
 	unregister_netdevice_notifier(&pgsb_ctx->gsb_dev_notifier);
 failed_netdev_notification:
+	wakeup_source_unregister(pgsb_ctx->gsb_wake_src);
+wakeup_source_register_failure:
 	gsb_debugfs_exit(pgsb_ctx);
 debug_fs_init_failure:
 	destroy_workqueue(gsb_wq);
@@ -2143,10 +2151,9 @@ static void __exit gsb_exit_module(void)
 
 	if (pgsb_ctx->is_wake_src_acquired)
 	{
-		__pm_relax(&pgsb_ctx->gsb_wake_src);
+		__pm_relax(pgsb_ctx->gsb_wake_src);
 	}
-	wakeup_source_remove(&pgsb_ctx->gsb_wake_src);
-	__pm_relax(&pgsb_ctx->gsb_wake_src);
+	wakeup_source_unregister(pgsb_ctx->gsb_wake_src);
 
 	gsb_debugfs_exit(pgsb_ctx);
 	gsb_ioctl_deinit();

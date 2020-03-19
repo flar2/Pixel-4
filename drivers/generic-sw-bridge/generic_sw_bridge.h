@@ -158,7 +158,7 @@ struct gsb_ctx
 	bool gsb_wake_lock_acquired;
 	u16 wake_source_ref_count;
 	bool do_we_need_wake_source;
-	struct wakeup_source gsb_wake_src;
+	struct wakeup_source *gsb_wake_src;
 	bool is_wake_src_acquired;
 
 	bool inactivity_timer_scheduled;
