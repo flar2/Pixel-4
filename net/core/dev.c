@@ -4528,6 +4528,7 @@ drop:
 	}
 
 out:
+	trace_net_receive_skb_exit(skb);
 	return ret;
 }
 
@@ -6959,18 +6960,9 @@ int dev_set_mtu(struct net_device *dev, int new_mtu)
 	if (new_mtu == dev->mtu)
 		return 0;
 
-	/* MTU must be positive, and in range */
-	if (new_mtu < 0 || new_mtu < dev->min_mtu) {
-		net_err_ratelimited("%s: Invalid MTU %d requested, hw min %d\n",
-				    dev->name, new_mtu, dev->min_mtu);
-		return -EINVAL;
-	}
-
-	if (dev->max_mtu > 0 && new_mtu > dev->max_mtu) {
-		net_err_ratelimited("%s: Invalid MTU %d requested, hw max %d\n",
-				    dev->name, new_mtu, dev->max_mtu);
-		return -EINVAL;
-	}
+	err = dev_validate_mtu(dev, new_mtu);
+	if (err)
+		return err;
 
 	if (!netif_device_present(dev))
 		return -ENODEV;
@@ -7742,8 +7734,10 @@ int register_netdevice(struct net_device *dev)
 		goto err_uninit;
 
 	ret = netdev_register_kobject(dev);
-	if (ret)
+	if (ret) {
+		dev->reg_state = NETREG_UNREGISTERED;
 		goto err_uninit;
+	}
 	dev->reg_state = NETREG_REGISTERED;
 
 	__netdev_update_features(dev);
@@ -7842,6 +7836,23 @@ int init_dummy_netdev(struct net_device *dev)
 EXPORT_SYMBOL_GPL(init_dummy_netdev);
 
 
+int dev_validate_mtu(struct net_device *dev, int new_mtu)
+{
+	/* MTU must be positive, and in range */
+	if (new_mtu < 0 || new_mtu < dev->min_mtu) {
+		net_err_ratelimited("%s: Invalid MTU %d requested, hw min %d\n",
+				    dev->name, new_mtu, dev->min_mtu);
+		return -EINVAL;
+	}
+
+	if (dev->max_mtu > 0 && new_mtu > dev->max_mtu) {
+		net_err_ratelimited("%s: Invalid MTU %d requested, hw max %d\n",
+				    dev->name, new_mtu, dev->max_mtu);
+		return -EINVAL;
+	}
+	return 0;
+}
+
 /**
  *	register_netdev	- register a network device
  *	@dev: device to register
@@ -7934,6 +7945,7 @@ static void netdev_wait_allrefs(struct net_device *dev)
 			pr_emerg("unregister_netdevice: waiting for %s to become free. Usage count = %d\n",
 				 dev->name, refcnt);
 			warning_time = jiffies;
+			break;
 		}
 	}
 }
@@ -7997,9 +8009,9 @@ void netdev_run_todo(void)
 		netdev_wait_allrefs(dev);
 
 		/* paranoia */
-		BUG_ON(netdev_refcnt_read(dev));
-		BUG_ON(!list_empty(&dev->ptype_all));
-		BUG_ON(!list_empty(&dev->ptype_specific));
+		WARN_ON(netdev_refcnt_read(dev));
+		WARN_ON(!list_empty(&dev->ptype_all));
+		WARN_ON(!list_empty(&dev->ptype_specific));
 		WARN_ON(rcu_access_pointer(dev->ip_ptr));
 		WARN_ON(rcu_access_pointer(dev->ip6_ptr));
 		WARN_ON(dev->dn_ptr);

@@ -120,7 +120,7 @@
 #define UART_CONSOLE_CORE2X_VOTE (960)
 
 #define WAKEBYTE_TIMEOUT_MSEC	(2000)
-#define WAIT_XFER_MAX_ITER	(50)
+#define WAIT_XFER_MAX_ITER	(2)
 #define WAIT_XFER_MAX_TIMEOUT_US	(10000)
 #define WAIT_XFER_MIN_TIMEOUT_US	(9000)
 #define IPC_LOG_PWR_PAGES	(6)
@@ -176,6 +176,7 @@ struct msm_geni_serial_port {
 	void *ipc_log_rx;
 	void *ipc_log_pwr;
 	void *ipc_log_misc;
+	void *console_log;
 	unsigned int cur_baud;
 	int ioctl_count;
 	int edge_count;
@@ -309,6 +310,12 @@ static void wait_for_transfers_inflight(struct uart_port *uport)
 {
 	int iter = 0;
 	struct msm_geni_serial_port *port = GET_DEV_PORT(uport);
+	unsigned int geni_status;
+
+	geni_status = geni_read_reg_nolog(uport->membase, SE_GENI_STATUS);
+	/* Possible stop rx is called before this. */
+	if (!(geni_status & S_GENI_CMD_ACTIVE))
+		return;
 
 	while (iter < WAIT_XFER_MAX_ITER) {
 		if (check_transfers_inflight(uport)) {
@@ -1565,8 +1572,11 @@ static irqreturn_t msm_geni_serial_isr(int isr, void *dev)
 	bool drop_rx = false;
 
 	spin_lock_irqsave(&uport->lock, flags);
-	if (uart_console(uport) && uport->suspended)
+	if (uart_console(uport) && uport->suspended) {
+		IPC_LOG_MSG(msm_port->console_log,
+			"%s. Console in suspend state\n", __func__);
 		goto exit_geni_serial_isr;
+	}
 	if (!uart_console(uport) && pm_runtime_status_suspended(uport->dev)) {
 		dev_err(uport->dev, "%s.Device is suspended.\n", __func__);
 		IPC_LOG_MSG(msm_port->ipc_log_misc,
@@ -1577,6 +1587,10 @@ static irqreturn_t msm_geni_serial_isr(int isr, void *dev)
 						SE_GENI_M_IRQ_STATUS);
 	s_irq_status = geni_read_reg_nolog(uport->membase,
 						SE_GENI_S_IRQ_STATUS);
+	if (uart_console(uport))
+		IPC_LOG_MSG(msm_port->console_log,
+			"%s. sirq 0x%x mirq:0x%x\n", __func__, s_irq_status,
+								m_irq_status);
 	m_irq_en = geni_read_reg_nolog(uport->membase, SE_GENI_M_IRQ_EN);
 	dma = geni_read_reg_nolog(uport->membase, SE_GENI_DMA_MODE_EN);
 	dma_tx_status = geni_read_reg_nolog(uport->membase, SE_DMA_TX_IRQ_STAT);
@@ -2008,7 +2022,7 @@ static void msm_geni_serial_set_termios(struct uart_port *uport,
 	unsigned int rx_trans_cfg;
 	unsigned int rx_parity_cfg;
 	unsigned int stop_bit_len;
-	unsigned int clk_div;
+	int clk_div;
 	unsigned long ser_clk_cfg = 0;
 	struct msm_geni_serial_port *port = GET_DEV_PORT(uport);
 	unsigned long clk_rate;
@@ -2306,7 +2320,7 @@ msm_geni_serial_earlycon_setup(struct earlycon_device *dev,
 	u32 bits_per_char = 0;
 	u32 s_clk_cfg = 0;
 	u32 baud = 115200;
-	u32 clk_div;
+	int clk_div;
 	unsigned long clk_rate;
 	unsigned long cfg0, cfg1;
 
@@ -2429,14 +2443,13 @@ static void console_unregister(struct uart_driver *drv)
 static void msm_geni_serial_debug_init(struct uart_port *uport, bool console)
 {
 	struct msm_geni_serial_port *msm_port = GET_DEV_PORT(uport);
+	char name[30];
 
 	msm_port->dbg = debugfs_create_dir(dev_name(uport->dev), NULL);
 	if (IS_ERR_OR_NULL(msm_port->dbg))
 		dev_err(uport->dev, "Failed to create dbg dir\n");
 
 	if (!console) {
-		char name[30];
-
 		memset(name, 0, sizeof(name));
 		if (!msm_port->ipc_log_rx) {
 			scnprintf(name, sizeof(name), "%s%s",
@@ -2471,6 +2484,16 @@ static void msm_geni_serial_debug_init(struct uart_port *uport, bool console)
 			msm_port->ipc_log_misc = ipc_log_context_create(
 					IPC_LOG_MISC_PAGES, name, 0);
 			if (!msm_port->ipc_log_misc)
+				dev_info(uport->dev, "Err in Misc IPC Log\n");
+		}
+	} else {
+		memset(name, 0, sizeof(name));
+		if (!msm_port->console_log) {
+			scnprintf(name, sizeof(name), "%s%s",
+					dev_name(uport->dev), "_console");
+			msm_port->console_log = ipc_log_context_create(
+					IPC_LOG_MISC_PAGES, name, 0);
+			if (!msm_port->console_log)
 				dev_info(uport->dev, "Err in Misc IPC Log\n");
 		}
 	}
@@ -2950,19 +2973,24 @@ static int msm_geni_serial_sys_hib_resume_noirq(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct msm_geni_serial_port *port = platform_get_drvdata(pdev);
 	struct uart_port *uport = &port->uport;
-	unsigned long cfg0, cfg1;
 
-	if (uart_console(uport) &&
-	    console_suspend_enabled && uport->suspended) {
+	if (uart_console(uport)) {
 		uart_resume_port((struct uart_driver *)uport->private_data,
 									uport);
-		dev_dbg(dev, "%s\n", __func__);
-		se_get_packing_config(8, 1, false, &cfg0, &cfg1);
-		geni_write_reg_nolog(cfg0, uport->membase,
-					SE_GENI_TX_PACKING_CFG0);
-		geni_write_reg_nolog(cfg1, uport->membase,
-					SE_GENI_TX_PACKING_CFG1);
-		disable_irq(uport->irq);
+		/*
+		 * For hibernation usecase clients for
+		 * console UART won't call port setup during restore.
+		 * Hence call port setup for console uart.
+		 */
+		msm_geni_serial_port_setup(uport);
+	} else {
+		/*
+		 * Peripheral register settings are lost during hibernation.
+		 * Update setup flag such that port setup happens again
+		 * during next session. Clients of HS-UART will close and
+		 * open the port during hibernation.
+		 */
+		port->port_setup = false;
 	}
 	return 0;
 }
