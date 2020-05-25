@@ -30,7 +30,7 @@
 #include "rmnet_perf_core.h"
 #include "rmnet_perf_config.h"
 
-#ifdef CONFIG_QCOM_QMI_POWER_COLLAPSE
+#if IS_ENABLED(CONFIG_QCOM_QMI_POWER_COLLAPSE)
 #include <soc/qcom/qmi_rmnet.h>
 #endif
 
@@ -971,7 +971,7 @@ int __rmnet_perf_core_deaggregate(struct sk_buff *skb, struct rmnet_port *port)
 			goto skip_frame;
 		skb->dev = ep->egress_dev;
 
-#ifdef CONFIG_QCOM_QMI_POWER_COLLAPSE
+#if IS_ENABLED(CONFIG_QCOM_QMI_POWER_COLLAPSE)
 		/* Wakeup PS work on DL packets */
 		if ((port->data_format & RMNET_INGRESS_FORMAT_PS) &&
 		    !maph->cd_bit)
