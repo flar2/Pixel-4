@@ -704,6 +704,8 @@ struct ufs_stats {
 	int q_depth;
 	int err_stats[UFS_ERR_MAX];
 	struct ufshcd_req_stat req_stats[TS_NUM_STATS];
+	u64 peak_reqs[TS_NUM_STATS];
+	u64 peak_queue_depth;
 	int query_stats_arr[UPIU_QUERY_OPCODE_MAX][MAX_QUERY_IDN];
 	struct ufshcd_io_stat io_read;
 	struct ufshcd_io_stat io_write;
@@ -870,6 +872,7 @@ extern void ufshcd_complete_lrb(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
  * @uic_error: UFS interconnect layer error status
  * @saved_err: sticky error mask
  * @saved_uic_err: sticky UIC error mask
+ * @silence_err_logs: flag to silence error logs
  * @dev_cmd: ufs device management command information
  * @last_dme_cmd_tstamp: time stamp of the last completed DME command
  * @auto_bkops_enabled: to track whether bkops is enabled in device
@@ -1417,9 +1420,14 @@ static inline bool ufshcd_is_embedded_dev(struct ufs_hba *hba)
 	return false;
 }
 
+extern u64 ufshcd_prev_sum[TS_NUM_STATS];
+extern u64 ufshcd_prev_count[TS_NUM_STATS];
+
 static inline void ufshcd_init_req_stats(struct ufs_hba *hba)
 {
 	memset(hba->ufs_stats.req_stats, 0, sizeof(hba->ufs_stats.req_stats));
+	memset(ufshcd_prev_sum, 0, sizeof(ufshcd_prev_sum));
+	memset(ufshcd_prev_count, 0, sizeof(ufshcd_prev_count));
 }
 
 /* Expose Query-Request API */

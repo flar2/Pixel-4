@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -19,6 +19,7 @@
 #define pr_fmt(fmt)	"[drm:%s:%d] " fmt, __func__, __LINE__
 
 #include <drm/drm_crtc.h>
+#include <drm/drm_fixed.h>
 #include <linux/debugfs.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -374,32 +375,9 @@ static void _sde_debugfs_destroy(struct sde_kms *sde_kms)
 static int sde_kms_enable_vblank(struct msm_kms *kms, struct drm_crtc *crtc)
 {
 	int ret = 0;
-	struct sde_kms *sde_kms;
-	struct msm_drm_private *priv;
-	struct sde_crtc *sde_crtc;
-	struct drm_encoder *drm_enc;
-
-	sde_kms = to_sde_kms(kms);
-	priv = sde_kms->dev->dev_private;
-	sde_crtc = to_sde_crtc(crtc);
 
 	SDE_ATRACE_BEGIN("sde_kms_enable_vblank");
-
-	if (sde_crtc->vblank_requested == false) {
-		SDE_ATRACE_BEGIN("sde_encoder_trigger_early_wakeup");
-		drm_for_each_encoder(drm_enc, crtc->dev)
-			sde_encoder_trigger_early_wakeup(drm_enc);
-
-		if (sde_kms->first_kickoff) {
-			sde_power_scale_reg_bus(&priv->phandle,
-					sde_kms->core_client,
-					VOTE_INDEX_HIGH, false);
-		}
-		SDE_ATRACE_END("sde_encoder_trigger_early_wakeup");
-	}
-
 	ret = sde_crtc_vblank(crtc, true);
-
 	SDE_ATRACE_END("sde_kms_enable_vblank");
 
 	return ret;
@@ -2912,6 +2890,60 @@ static bool sde_kms_check_for_splash(struct msm_kms *kms)
 	return sde_kms->splash_data.num_splash_displays;
 }
 
+static int sde_kms_get_mixer_count(const struct msm_kms *kms,
+		const struct drm_display_mode *mode,
+		u32 max_mixer_width, u32 *num_lm)
+{
+	struct sde_kms *sde_kms;
+	s64 mode_clock_hz = 0;
+	s64 max_mdp_clock_hz = 0;
+	s64 mdp_fudge_factor = 0;
+	s64 temp = 0;
+	s64 htotal_fp = 0;
+	s64 vtotal_fp = 0;
+	s64 vrefresh_fp = 0;
+
+	if (!num_lm) {
+		SDE_ERROR("invalid num_lm pointer\n");
+		return -EINVAL;
+	}
+	*num_lm = 1;
+
+	if (!kms || !mode || !max_mixer_width) {
+		SDE_ERROR("invlaid input args");
+		return -EINVAL;
+	}
+
+	sde_kms = to_sde_kms(kms);
+
+	max_mdp_clock_hz = drm_fixp_from_fraction(
+			sde_kms->perf.max_core_clk_rate, 1);
+	mdp_fudge_factor = drm_fixp_from_fraction(105, 100);
+	htotal_fp = drm_fixp_from_fraction(mode->htotal, 1);
+	vtotal_fp =  drm_fixp_from_fraction(mode->vtotal, 1);
+	vrefresh_fp =  drm_fixp_from_fraction(mode->vrefresh, 1);
+
+	temp = drm_fixp_mul(htotal_fp, vtotal_fp);
+	temp = drm_fixp_mul(temp, vrefresh_fp);
+	mode_clock_hz = drm_fixp_mul(temp, mdp_fudge_factor);
+
+	if (mode_clock_hz > max_mdp_clock_hz ||
+			mode->hdisplay > max_mixer_width) {
+		*num_lm = 2;
+		if ((mode_clock_hz >> 1) > max_mdp_clock_hz) {
+			SDE_DEBUG("[%s] clock %d exceeds max_mdp_clk %d\n",
+					mode->name, mode_clock_hz,
+					max_mdp_clock_hz);
+			return -EINVAL;
+		}
+	}
+
+	SDE_DEBUG("[%s] h=%d, v=%d, fps%d, max_mdp_pclk_hz=%llu, num_lm=%d\n",
+			mode->name, mode->htotal, mode->vtotal, mode->vrefresh,
+			sde_kms->perf.max_core_clk_rate, *num_lm);
+	return 0;
+}
+
 static void _sde_kms_null_commit(struct drm_device *dev,
 		struct drm_encoder *enc)
 {
@@ -3220,6 +3252,7 @@ static const struct msm_kms_funcs kms_funcs = {
 	.get_address_space = _sde_kms_get_address_space,
 	.postopen = _sde_kms_post_open,
 	.check_for_splash = sde_kms_check_for_splash,
+	.get_mixer_count = sde_kms_get_mixer_count,
 };
 
 /* the caller api needs to turn on clock before calling it */
@@ -3915,4 +3948,30 @@ int sde_kms_handle_recovery(struct drm_encoder *encoder)
 {
 	SDE_EVT32(DRMID(encoder), MSM_ENC_ACTIVE_REGION);
 	return sde_encoder_wait_for_event(encoder, MSM_ENC_ACTIVE_REGION);
+}
+
+void sde_kms_trigger_early_wakeup(struct sde_kms *sde_kms,
+		struct drm_crtc *crtc)
+{
+	struct msm_drm_private *priv;
+	struct drm_encoder *drm_enc;
+
+	if (!sde_kms || !crtc) {
+		SDE_ERROR("invalid argument sde_kms %pK crtc %pK\n",
+			sde_kms, crtc);
+		return;
+	}
+
+	priv = sde_kms->dev->dev_private;
+
+	SDE_ATRACE_BEGIN("sde_kms_trigger_early_wakeup");
+	drm_for_each_encoder_mask(drm_enc, crtc->dev, crtc->state->encoder_mask)
+		sde_encoder_trigger_early_wakeup(drm_enc);
+
+	if (sde_kms->first_kickoff) {
+		sde_power_scale_reg_bus(&priv->phandle,
+				sde_kms->core_client,
+				VOTE_INDEX_HIGH, false);
+	}
+	SDE_ATRACE_END("sde_kms_trigger_early_wakeup");
 }
