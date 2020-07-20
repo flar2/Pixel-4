@@ -28,6 +28,7 @@
 #include <cds_ieee80211_common.h>
 #endif
 #include "dp_rx_defrag.h"
+#include "dp_ipa.h"
 #ifdef FEATURE_WDS
 #include "dp_txrx_wds.h"
 #endif
@@ -288,7 +289,8 @@ static uint32_t dp_rx_msdus_drop(struct dp_soc *soc, void *ring_desc,
 					msdu_list.sw_cookie[i]);
 			return rx_bufs_used;
 		}
-
+		dp_ipa_handle_rx_buf_smmu_mapping(soc, rx_desc->nbuf,
+						  RX_BUFFER_SIZE, false);
 		qdf_nbuf_unmap_single(soc->osdev,
 				      rx_desc->nbuf, QDF_DMA_FROM_DEVICE);
 
@@ -480,6 +482,8 @@ more_msdu_link_desc:
 		pdev = soc->pdev_list[rx_desc->pool_id];
 
 		nbuf = rx_desc->nbuf;
+		dp_ipa_handle_rx_buf_smmu_mapping(soc, nbuf,
+						  RX_BUFFER_SIZE, false);
 		qdf_nbuf_unmap_single(soc->osdev,
 				      nbuf, QDF_DMA_FROM_DEVICE);
 
@@ -1630,6 +1634,8 @@ dp_rx_wbm_err_process(struct dp_intr *int_ctx, struct dp_soc *soc,
 		}
 
 		nbuf = rx_desc->nbuf;
+		dp_ipa_handle_rx_buf_smmu_mapping(soc, nbuf,
+						  RX_BUFFER_SIZE, false);
 		qdf_nbuf_unmap_single(soc->osdev, nbuf,	QDF_DMA_FROM_DEVICE);
 
 		/*
@@ -1949,8 +1955,15 @@ dp_rx_err_mpdu_pop(struct dp_soc *soc, uint32_t mac_id,
 						continue;
 					}
 
-					qdf_nbuf_unmap_single(soc->osdev, msdu,
-						QDF_DMA_FROM_DEVICE);
+					dp_ipa_handle_rx_buf_smmu_mapping(
+							soc, msdu,
+							RX_BUFFER_SIZE,
+							false);
+					qdf_nbuf_unmap_nbytes_single(
+						soc->osdev, msdu,
+						QDF_DMA_FROM_DEVICE,
+						RX_BUFFER_SIZE);
+					rx_desc->unmapped = 1;
 
 					QDF_TRACE(QDF_MODULE_ID_DP,
 						QDF_TRACE_LEVEL_DEBUG,
