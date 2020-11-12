@@ -296,6 +296,7 @@ void rmnet_shs_wq_hstat_reset_node(struct rmnet_shs_wq_hstat_s *hnode)
 	hnode->hash = 0;
 	hnode->suggested_cpu = 0;
 	hnode->current_cpu = 0;
+	hnode->segs_per_skb = 0;
 	hnode->skb_tport_proto = 0;
 	hnode->stat_idx = -1;
 	INIT_LIST_HEAD(&hnode->cpu_node_id);
@@ -409,7 +410,8 @@ void rmnet_shs_wq_create_new_flow(struct rmnet_shs_skbn_s *node_p)
 		node_p->hstats->skb_tport_proto = node_p->skb_tport_proto;
 		node_p->hstats->current_cpu = node_p->map_cpu;
 		node_p->hstats->suggested_cpu = node_p->map_cpu;
-
+		/* Set egmentation off  by default */
+		node_p->hstats->segs_per_skb = 0;
 		/* Start TCP flows with segmentation if userspace connected */
 		if (rmnet_shs_userspace_connected &&
 		    node_p->hstats->skb_tport_proto == IPPROTO_TCP)
@@ -1939,7 +1941,7 @@ void rmnet_shs_update_cfg_mask(void)
 	}
 }
 
-void rmnet_shs_wq_filter(void)
+noinline void rmnet_shs_wq_filter(void)
 {
 	int cpu, cur_cpu;
 	int temp;
@@ -1964,11 +1966,11 @@ void rmnet_shs_wq_filter(void)
 				rmnet_shs_cpu_rx_filter_flows[temp]++;
 			}
 		cur_cpu = hnode->current_cpu;
-		if (cur_cpu >= MAX_CPUS) {
+		if (cur_cpu >= MAX_CPUS || cur_cpu < 0) {
 			continue;
 		}
 
-		if (hnode->node->hstats->segs_per_skb > 0) {
+		if (hnode->segs_per_skb > 0) {
 			rmnet_shs_cpu_node_tbl[cur_cpu].seg++;
 		}
 	}
