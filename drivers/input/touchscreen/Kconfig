@@ -1391,4 +1391,6 @@ source "drivers/input/touchscreen/nt36xxx/Kconfig"
 
 source "drivers/input/touchscreen/sec_ts/Kconfig"
 
+source "drivers/input/touchscreen/stm/Kconfig"
+
 endif
