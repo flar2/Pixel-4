@@ -95,6 +95,15 @@
 		_i->event_dispatch_table[event_id(_evt)] = handler_name(_hnd); \
 	} while (0)
 
+#ifdef CONFIG_WAKE_GESTURES
+#include <linux/wake_gestures.h>
+static bool is_suspended;
+bool scr_suspended_bramble(void)
+{
+	return is_suspended;
+}
+#endif
+
 
 /* Use decimal-formatted raw data */
 #define RAW_DATA_FORMAT_DEC
@@ -3094,6 +3103,11 @@ static bool fts_enter_pointer_event_handler(struct fts_ts_info *info, unsigned
 	if (!info->offload.offload_running) {
 #endif
 
+#ifdef CONFIG_WAKE_GESTURES
+	if (is_suspended)
+		x += 5000;
+#endif
+
 	input_mt_slot(info->input_dev, touchId);
 	input_report_key(info->input_dev, BTN_TOUCH, touch_condition);
 	input_mt_report_slot_state(info->input_dev, tool, 1);
@@ -5309,6 +5323,16 @@ static void fts_resume_work(struct work_struct *work)
 
 	info = container_of(work, struct fts_ts_info, resume_work);
 
+#ifdef CONFIG_WAKE_GESTURES
+	if (wg_switch) {
+		disable_irq_wake(info->client->irq);
+		fts_system_reset();
+		release_all_touches(info);
+		return;
+	}
+	return;
+#endif
+
 	if (!info->sensor_sleep)
 		return;
 
@@ -5365,6 +5389,14 @@ static void fts_suspend_work(struct work_struct *work)
 	struct fts_ts_info *info;
 
 	info = container_of(work, struct fts_ts_info, suspend_work);
+
+#ifdef CONFIG_WAKE_GESTURES
+	if (wg_switch) {
+		enable_irq_wake(info->client->irq);
+		release_all_touches(info);
+		return;
+	}
+#endif
 
 	if (info->sensor_sleep)
 		return;
@@ -5500,6 +5532,12 @@ static int fts_screen_state_chg_callback(struct notifier_block *nb,
 	switch (blank) {
 	case DRM_PANEL_BLANK_POWERDOWN:
 	case DRM_PANEL_BLANK_LP:
+#ifdef CONFIG_WAKE_GESTURES
+		if (wg_switch) {
+			is_suspended = true;
+			break;
+		}
+#endif
 		if (val == DRM_PANEL_EARLY_EVENT_BLANK) {
 			pr_debug("%s: BLANK\n", __func__);
 #ifdef SUPPORT_PROX_PALM
@@ -5513,6 +5551,16 @@ static int fts_screen_state_chg_callback(struct notifier_block *nb,
 		}
 		break;
 	case DRM_PANEL_BLANK_UNBLANK:
+#ifdef CONFIG_WAKE_GESTURES
+		if (wg_switch) {
+			is_suspended = false;
+			break;
+		}
+		if (wg_changed) {
+			wg_switch = wg_switch_temp;
+			wg_changed = false;
+		}
+#endif
 		if (val == DRM_PANEL_EVENT_BLANK) {
 			pr_debug("%s: UNBLANK\n", __func__);
 #ifdef SUPPORT_PROX_PALM

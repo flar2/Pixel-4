@@ -121,3 +121,4 @@ obj-$(CONFIG_TOUCHSCREEN_FTS_FOCALTECH)	+= focaltech_touch/
 obj-$(CONFIG_TOUCHSCREEN_NT36XXX)	+= nt36xxx/
 obj-$(CONFIG_TOUCHSCREEN_SEC_TS)	+= sec_ts/
 obj-$(CONFIG_TOUCHSCREEN_FTS)		+= stm/
+obj-$(CONFIG_WAKE_GESTURES)		+= wake_gestures.o

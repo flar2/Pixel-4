@@ -10,6 +10,15 @@
  * published by the Free Software Foundation.
  */
 
+#ifdef CONFIG_WAKE_GESTURES
+#include <linux/wake_gestures.h>
+static bool is_suspended;
+bool scr_suspended(void)
+{
+	return is_suspended;
+}
+#endif
+
 struct sec_ts_data *tsp_info;
 
 #include "sec_ts.h"
@@ -1791,6 +1800,11 @@ static void sec_ts_handle_coord_event(struct sec_ts_data *ts,
 				input_report_key(ts->input_dev, BTN_TOUCH, 1);
 				input_report_key(ts->input_dev,
 							BTN_TOOL_FINGER, 1);
+
+#ifdef CONFIG_WAKE_GESTURES
+						if (is_suspended)
+							ts->coord[t_id].x += 5000;
+#endif
 
 				input_report_abs(ts->input_dev,
 					ABS_MT_POSITION_X, ts->coord[t_id].x);
@@ -5160,6 +5174,13 @@ static int sec_ts_screen_state_chg_callback(struct notifier_block *nb,
 	switch (blank) {
 	case DRM_PANEL_BLANK_POWERDOWN:
 	case DRM_PANEL_BLANK_LP:
+#ifdef CONFIG_WAKE_GESTURES
+		if (wg_switch) {
+			enable_irq_wake(ts->client->irq);
+			is_suspended = true;
+			break;
+		}
+#endif
 		if (val == DRM_PANEL_EARLY_EVENT_BLANK) {
 			input_dbg(true, &ts->client->dev,
 				  "%s: DRM_PANEL_BLANK_POWERDOWN.\n", __func__);
@@ -5167,6 +5188,17 @@ static int sec_ts_screen_state_chg_callback(struct notifier_block *nb,
 		}
 		break;
 	case DRM_PANEL_BLANK_UNBLANK:
+#ifdef CONFIG_WAKE_GESTURES
+		if (wg_switch) {
+			disable_irq_wake(ts->client->irq);
+			is_suspended = false;
+			break;
+		}
+		if (wg_changed) {
+			wg_switch = wg_switch_temp;
+			wg_changed = false;
+		}
+#endif
 		if (val == DRM_PANEL_EVENT_BLANK) {
 			input_dbg(true, &ts->client->dev,
 				  "%s: DRM_PANEL_BLANK_UNBLANK.\n", __func__);
