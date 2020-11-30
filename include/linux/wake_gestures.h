@@ -27,7 +27,7 @@ extern bool wg_switch;
 extern bool wg_switch_temp;
 extern bool wg_changed;
 
-bool scr_suspended_bramble(void);
+//bool scr_suspended_bramble(void);
 bool scr_suspended(void);
 void set_vibrate(int value);
 

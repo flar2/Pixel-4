@@ -124,9 +124,9 @@ __setup("androidboot.hardware=", get_model);
 
 static bool is_suspended(void)
 {
-	if (hw_version == BRAMBLE)
+	/*if (hw_version == BRAMBLE)
 		return scr_suspended_bramble();
-	else
+	else*/
 		return scr_suspended();
 }
 
@@ -766,6 +766,10 @@ static struct kobject *android_touch_kobj;
 static int __init wake_gestures_init(void)
 {
 	int rc = 0;
+
+	//exit if 4a 5G
+	if (hw_version == BRAMBLE)
+		return 0;
 
 	wake_dev = input_allocate_device();
 	if (!wake_dev) {
