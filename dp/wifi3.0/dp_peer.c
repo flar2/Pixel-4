@@ -3586,3 +3586,33 @@ bool dp_peer_find_by_id_valid(struct dp_soc *soc, uint16_t peer_id)
 
 	return false;
 }
+
+void dp_peer_flush_frags(struct cdp_pdev *pdev, uint8_t vdev_id,
+			 uint8_t *peer_mac)
+{
+	struct dp_pdev *dp_pdev = (struct dp_pdev *)pdev;
+	struct dp_peer *peer;
+	struct dp_rx_tid *rx_tid;
+	uint8_t tid;
+
+	if (!dp_pdev || !dp_pdev->soc)
+		return;
+
+	peer = dp_peer_find_hash_find(dp_pdev->soc, peer_mac, 0, vdev_id);
+	if (!peer)
+		return;
+
+	dp_info("Flushing fragments for peer " QDF_MAC_ADDR_STR,
+		QDF_MAC_ADDR_ARRAY(peer->mac_addr.raw));
+
+	for (tid = 0; tid < DP_MAX_TIDS; tid++) {
+		rx_tid = &peer->rx_tid[tid];
+
+		qdf_spin_lock_bh(&rx_tid->tid_lock);
+		dp_rx_defrag_waitlist_remove(peer, tid);
+		dp_rx_reorder_flush_frag(peer, tid);
+		qdf_spin_unlock_bh(&rx_tid->tid_lock);
+	}
+
+	dp_peer_unref_delete(peer);
+}
