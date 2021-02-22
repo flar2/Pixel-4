@@ -833,7 +833,7 @@ static void ep_pcie_core_init(struct ep_pcie_dev_t *dev, bool configured)
 			readl_relaxed(dev->parf + PCIE20_PARF_INT_ALL_MASK));
 	}
 
-	if (dev->active_config)
+	if (dev->active_config) {
 		ep_pcie_write_reg(dev->dm_core, PCIE20_AUX_CLK_FREQ_REG, 0x14);
 
 		/* Prevent L1ss wakeup after 100ms */

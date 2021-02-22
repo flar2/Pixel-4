@@ -691,7 +691,6 @@ static struct avc_node *avc_insert(struct selinux_avc *avc,
 	struct avc_node *pos, *node = NULL;
 	int hvalue;
 	unsigned long flag;
-
 	if (avc_latest_notif_update(avc, avd->seqno, 1))
 		goto out;
 

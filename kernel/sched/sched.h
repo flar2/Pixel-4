@@ -53,6 +53,8 @@ struct cpuidle_state;
 extern __read_mostly bool sched_predl;
 extern unsigned int sched_capacity_margin_up[NR_CPUS];
 extern unsigned int sched_capacity_margin_down[NR_CPUS];
+extern unsigned int sched_capacity_margin_up_boosted[NR_CPUS];
+extern unsigned int sched_capacity_margin_down_boosted[NR_CPUS];
 
 #ifdef CONFIG_SCHED_WALT
 extern unsigned int sched_ravg_window;
@@ -2045,7 +2047,12 @@ static inline unsigned long task_util(struct task_struct *p)
  *
  * Return: the (estimated) utilization for the specified CPU
  */
+
+#ifdef CONFIG_SCHED_WALT
 static inline unsigned long cpu_util(int cpu)
+#else
+static inline unsigned long __cpu_util(int cpu)
+#endif
 {
 	struct cfs_rq *cfs_rq;
 	unsigned int util;
@@ -2153,11 +2160,17 @@ static inline unsigned long cpu_util_rt(int cpu)
 	return rt_rq->avg.util_avg;
 }
 
+static inline unsigned long cpu_util(int cpu)
+{
+	return min(__cpu_util(cpu) + cpu_util_rt(cpu), capacity_orig_of(cpu));
+}
+
 static inline unsigned long
 cpu_util_freq(int cpu, struct sched_walt_cpu_load *walt_load)
 {
-	return min(cpu_util(cpu) + cpu_util_rt(cpu), capacity_orig_of(cpu));
+	return min(cpu_util(cpu), capacity_orig_of(cpu));
 }
+
 
 #define sched_ravg_window TICK_NSEC
 #define sysctl_sched_use_walt_cpu_util 0

@@ -1435,7 +1435,7 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 	int rc = 0;
 	enum icl_override_mode icl_override = HW_AUTO_MODE;
 	/* suspend if 25mA or less is requested */
-	bool suspend = (icl_ua <= SUSPEND_ICL_MAX);
+	bool suspend = (icl_ua <= USBIN_25MA);
 
 	/* Do not configure ICL from SW for DAM cables */
 	if (smblib_get_prop_typec_mode(chg) ==
@@ -1727,7 +1727,7 @@ static int smblib_dc_icl_vote_callback(struct votable *votable, void *data,
 		icl_ua = 0;
 	}
 
-	suspend = (icl_ua <= SUSPEND_ICL_MAX);
+	suspend = (icl_ua <= USBIN_25MA);
 	if (suspend)
 		goto suspend;
 
@@ -3843,6 +3843,14 @@ static int smblib_get_prop_ufp_mode(struct smb_charger *chg)
 		return POWER_SUPPLY_TYPEC_SOURCE_HIGH;
 	case SNK_RP_SHORT_BIT:
 		return POWER_SUPPLY_TYPEC_NON_COMPLIANT;
+	/*
+	 * Comment these BITs to avoid duplicated case number from Qualcomm
+	 *
+	 * case SNK_DAM_500MA_BIT:
+	 * case SNK_DAM_1500MA_BIT:
+	 * case SNK_DAM_3000MA_BIT:
+	 * 	return POWER_SUPPLY_TYPEC_SINK_DEBUG_ACCESSORY;
+	 */
 	default:
 		break;
 	}
@@ -4436,7 +4444,7 @@ int smblib_set_prop_sdp_current_max(struct smb_charger *chg,
 		if (pval.intval)
 			rc = smblib_handle_usb_current(chg, val->intval);
 	} else if (chg->system_suspend_supported) {
-		if (val->intval <= SUSPEND_ICL_MAX)
+		if (val->intval <= USBIN_25MA)
 			rc = vote(chg->usb_icl_votable,
 				PD_SUSPEND_SUPPORTED_VOTER, true, val->intval);
 		else
@@ -6875,8 +6883,7 @@ irqreturn_t switcher_power_ok_irq_handler(int irq, void *data)
 
 	/* skip suspending input if its already suspended by some other voter */
 	usb_icl = get_effective_result(chg->usb_icl_votable);
-	if ((stat & USE_USBIN_BIT) && usb_icl >= 0 &&
-	    usb_icl <= SUSPEND_ICL_MAX)
+	if ((stat & USE_USBIN_BIT) && usb_icl >= 0 && usb_icl <= USBIN_25MA)
 		return IRQ_HANDLED;
 
 	if (stat & USE_DCIN_BIT)
@@ -7545,6 +7552,7 @@ static void jeita_update_work(struct work_struct *work)
 	struct device_node *node = chg->dev->of_node;
 	struct device_node *batt_node, *pnode;
 	union power_supply_propval val;
+	union power_supply_propval batt_type;
 	int rc, tmp[2], max_fcc_ma, max_fv_uv;
 	u32 jeita_hard_thresholds[2];
 	u16 addr;
@@ -7571,8 +7579,16 @@ static void jeita_update_work(struct work_struct *work)
 	if (val.intval <= 0)
 		return;
 
+	rc = smblib_get_prop_from_bms(chg,
+			POWER_SUPPLY_PROP_BATTERY_TYPE, &batt_type);
+	if (rc < 0) {
+		smblib_err(chg, "Failed to get batt-type rc=%d\n", rc);
+		goto out;
+	}
+	pr_info("battery type=%s\n", batt_type.strval);
+
 	pnode = of_batterydata_get_best_profile(batt_node,
-					val.intval / 1000, NULL);
+					val.intval / 1000, batt_type.strval);
 	if (IS_ERR(pnode)) {
 		rc = PTR_ERR(pnode);
 		smblib_err(chg, "Failed to detect valid battery profile %d\n",
@@ -8125,6 +8141,7 @@ int smblib_init(struct smb_charger *chg)
 					smblib_pr_swap_detach_work);
 	INIT_DELAYED_WORK(&chg->pr_lock_clear_work,
 					smblib_pr_lock_clear_work);
+	setup_timer(&chg->apsd_timer, apsd_timer_cb, (unsigned long)chg);
 	/* Always start assuming dead battery.
 	 * BMS would clear the condition as needed.
 	 */

@@ -1535,13 +1535,6 @@ static int pl_disable_vote_callback(struct votable *votable,
 			if (chip->step_fcc) {
 				vote(chip->pl_awake_votable, FCC_STEPPER_VOTER,
 					true, 0);
-				/*
-				 * Configure ILIM above min ILIM of CP to
-				 * ensure CP is not disabled due to ILIM vote.
-				 * Later FCC stepper will take to ILIM to
-				 * target value.
-				 */
-				cp_configure_ilim(chip, FCC_VOTER, 0);
 				schedule_delayed_work(&chip->fcc_stepper_work,
 					0);
 			}

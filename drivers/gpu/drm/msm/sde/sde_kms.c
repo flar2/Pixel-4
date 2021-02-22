@@ -1105,6 +1105,8 @@ static void sde_kms_prepare_commit(struct msm_kms *kms,
 	_sde_kms_drm_check_dpms(state, MSM_DRM_EARLY_EVENT_BLANK);
 end:
 	SDE_ATRACE_END("prepare_commit");
+
+	_sde_kms_drm_check_dpms(state, MSM_DRM_EARLY_EVENT_BLANK);
 }
 
 static void sde_kms_commit(struct msm_kms *kms,

@@ -882,7 +882,7 @@ struct task_struct {
 	unsigned			restore_sigmask:1;
 #endif
 #ifdef CONFIG_MEMCG
-	unsigned			in_user_fault:1;
+	unsigned			memcg_may_oom:1;
 #ifndef CONFIG_SLOB
 	unsigned			memcg_kmem_skip_account:1;
 #endif
@@ -1964,6 +1964,7 @@ static inline void set_task_cpu(struct task_struct *p, unsigned int cpu)
 # define vcpu_is_preempted(cpu)	false
 #endif
 
+extern long msm_sched_setaffinity(pid_t pid, struct cpumask *new_mask);
 extern long sched_setaffinity(pid_t pid, const struct cpumask *new_mask);
 extern long sched_getaffinity(pid_t pid, struct cpumask *mask);
 

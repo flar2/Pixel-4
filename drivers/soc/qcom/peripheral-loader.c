@@ -69,6 +69,15 @@
 	} while (0)
 
 
+#define pil_log(msg, desc)	\
+	do {			\
+		if (pil_ipc_log)		\
+			pil_ipc("[%s]: %s", desc->name, msg); \
+		else		\
+			trace_pil_event(msg, desc);	\
+	} while (0)
+
+
 static void __iomem *pil_info_base;
 #ifdef CONFIG_QCOM_MINIDUMP
 static void __iomem *minidump_debug;

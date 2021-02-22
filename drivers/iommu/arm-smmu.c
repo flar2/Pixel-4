@@ -1280,6 +1280,7 @@ static void __arm_smmu_tlb_sync_timeout(struct arm_smmu_device *smmu)
 
 	BUG_ON(IS_ENABLED(CONFIG_IOMMU_TLBSYNC_DEBUG));
 }
+
 /* Wait for any pending TLB invalidations to complete */
 static int __arm_smmu_tlb_sync(struct arm_smmu_device *smmu,
 			void __iomem *sync, void __iomem *status)
@@ -1326,9 +1327,9 @@ static void arm_smmu_tlb_sync_context(void *cookie)
 	if (__arm_smmu_tlb_sync(smmu, base + ARM_SMMU_CB_TLBSYNC,
 				base + ARM_SMMU_CB_TLBSTATUS)) {
 		dev_err_ratelimited(smmu->dev,
-				"TLB sync on cb%d failed for device %s\n",
-				smmu_domain->cfg.cbndx,
-				dev_name(smmu_domain->dev));
+				    "TLB sync on cb%d failed for device %s\n",
+				    smmu_domain->cfg.cbndx,
+				    dev_name(smmu_domain->dev));
 	}
 	spin_unlock_irqrestore(&smmu_domain->sync_lock, flags);
 }
@@ -4236,6 +4237,8 @@ static void arm_smmu_device_reset(struct arm_smmu_device *smmu)
 		cb_base = ARM_SMMU_CB(smmu, i);
 
 		fsr = readl_relaxed(cb_base + ARM_SMMU_CB_FSR);
+
+
 		if (fsr & FSR_FAULT) {
 			writel_relaxed(fsr & FSR_FAULT, cb_base +
 				       ARM_SMMU_CB_FSR);

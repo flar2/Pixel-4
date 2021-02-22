@@ -2717,6 +2717,7 @@ int mhi_dev_open_channel(uint32_t chan_id,
 free_client:
 	kfree(*handle_client);
 	*handle_client = NULL;
+
 exit:
 	mutex_unlock(&ch->ch_lock);
 	return rc;
@@ -2752,10 +2753,6 @@ bool mhi_dev_channel_has_pending_write(struct mhi_dev_client *handle)
 		return -EINVAL;
 	}
 
-	if (!handle) {
-		mhi_log(MHI_MSG_ERROR, "Invalid channel access:%d\n", -ENODEV);
-		return;
-	}
 	ch = handle->channel;
 	if (!ch)
 		return -EINVAL;
@@ -3400,7 +3397,6 @@ static void mhi_update_state_info_ch(uint32_t ch_id, enum mhi_ctrl_info info)
 		uci_ctrl_update(&reason);
 	}
 }
-
 
 static void mhi_update_state_info(enum mhi_ctrl_info info)
 {

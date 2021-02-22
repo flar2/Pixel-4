@@ -18,7 +18,7 @@
 #include <crypto/skcipher.h>
 #include "fscrypt_private.h"
 
-/**
+/*
  * struct fscrypt_nokey_name - identifier for directory entry when key is absent
  *
  * When userspace lists an encrypted directory without access to the key, the
@@ -106,9 +106,12 @@ static inline bool fscrypt_is_dot_dotdot(const struct qstr *str)
 
 /**
  * fscrypt_fname_encrypt() - encrypt a filename
- *
- * The output buffer must be at least as large as the input buffer.
- * Any extra space is filled with NUL padding before encryption.
+ * @inode: inode of the parent directory (for regular filenames)
+ *	   or of the symlink (for symlink targets)
+ * @iname: the filename to encrypt
+ * @out: (output) the encrypted filename
+ * @olen: size of the encrypted filename.  It must be at least @iname->len.
+ *	  Any extra space is filled with NUL padding before encryption.
  *
  * Return: 0 on success, -errno on failure
  */
@@ -158,8 +161,11 @@ int fscrypt_fname_encrypt(const struct inode *inode, const struct qstr *iname,
 
 /**
  * fname_decrypt() - decrypt a filename
- *
- * The caller must have allocated sufficient memory for the @oname string.
+ * @inode: inode of the parent directory (for regular filenames)
+ *	   or of the symlink (for symlink targets)
+ * @iname: the encrypted filename to decrypt
+ * @oname: (output) the decrypted filename.  The caller must have allocated
+ *	   enough space for this, e.g. using fscrypt_fname_alloc_buffer().
  *
  * Return: 0 on success, -errno on failure
  */
@@ -207,7 +213,10 @@ static const char lookup_table[65] =
 #define BASE64_CHARS(nbytes)	DIV_ROUND_UP((nbytes) * 4, 3)
 
 /**
- * base64_encode() -
+ * base64_encode() - base64-encode some bytes
+ * @src: the bytes to encode
+ * @len: number of bytes to encode
+ * @dst: (output) the base64-encoded string.  Not NUL-terminated.
  *
  * Encodes the input string using characters from the set [A-Za-z0-9+,].
  * The encoded string is roughly 4/3 times the size of the input string.
@@ -273,7 +282,12 @@ bool fscrypt_fname_encrypted_size(const struct inode *inode, u32 orig_len,
 }
 
 /**
- * fscrypt_fname_alloc_buffer - allocate a buffer for presented filenames
+ * fscrypt_fname_alloc_buffer() - allocate a buffer for presented filenames
+ * @inode: inode of the parent directory (for regular filenames)
+ *	   or of the symlink (for symlink targets)
+ * @max_encrypted_len: maximum length of encrypted filenames the buffer will be
+ *		       used to present
+ * @crypto_str: (output) buffer to allocate
  *
  * Allocate a buffer that is large enough to hold any decrypted or encoded
  * filename (null-terminated), for the given maximum encrypted filename length.
@@ -298,9 +312,10 @@ int fscrypt_fname_alloc_buffer(const struct inode *inode,
 EXPORT_SYMBOL(fscrypt_fname_alloc_buffer);
 
 /**
- * fscrypt_fname_free_buffer - free the buffer for presented filenames
+ * fscrypt_fname_free_buffer() - free a buffer for presented filenames
+ * @crypto_str: the buffer to free
  *
- * Free the buffer allocated by fscrypt_fname_alloc_buffer().
+ * Free a buffer that was allocated by fscrypt_fname_alloc_buffer().
  */
 void fscrypt_fname_free_buffer(struct fscrypt_str *crypto_str)
 {
@@ -312,10 +327,19 @@ void fscrypt_fname_free_buffer(struct fscrypt_str *crypto_str)
 EXPORT_SYMBOL(fscrypt_fname_free_buffer);
 
 /**
- * fscrypt_fname_disk_to_usr() - converts a filename from disk space to user
- * space
- *
- * The caller must have allocated sufficient memory for the @oname string.
+ * fscrypt_fname_disk_to_usr() - convert an encrypted filename to
+ *				 user-presentable form
+ * @inode: inode of the parent directory (for regular filenames)
+ *	   or of the symlink (for symlink targets)
+ * @hash: first part of the name's dirhash, if applicable.  This only needs to
+ *	  be provided if the filename is located in an indexed directory whose
+ *	  encryption key may be unavailable.  Not needed for symlink targets.
+ * @minor_hash: second part of the name's dirhash, if applicable
+ * @iname: encrypted filename to convert.  May also be "." or "..", which
+ *	   aren't actually encrypted.
+ * @oname: output buffer for the user-presentable filename.  The caller must
+ *	   have allocated enough space for this, e.g. using
+ *	   fscrypt_fname_alloc_buffer().
  *
  * If the key is available, we'll decrypt the disk name.  Otherwise, we'll
  * encode it for presentation in fscrypt_nokey_name format.
@@ -396,9 +420,9 @@ EXPORT_SYMBOL(fscrypt_fname_disk_to_usr);
  * directory's encryption key, then @iname is the plaintext, so we encrypt it to
  * get the disk_name.
  *
- * Else, for keyless @lookup operations, @iname is the presented ciphertext, so
- * we decode it to get the fscrypt_nokey_name.  Non-@lookup operations will be
- * impossible in this case, so we fail them with ENOKEY.
+ * Else, for keyless @lookup operations, @iname should be a no-key name, so we
+ * decode it to get the struct fscrypt_nokey_name.  Non-@lookup operations will
+ * be impossible in this case, so we fail them with ENOKEY.
  *
  * If successful, fscrypt_free_filename() must be called later to clean up.
  *
@@ -442,7 +466,7 @@ int fscrypt_setup_filename(struct inode *dir, const struct qstr *iname,
 	}
 	if (!lookup)
 		return -ENOKEY;
-	fname->is_ciphertext_name = true;
+	fname->is_nokey_name = true;
 
 	/*
 	 * We don't have the key and we are doing a lookup; decode the
@@ -544,7 +568,7 @@ EXPORT_SYMBOL_GPL(fscrypt_fname_siphash);
  * Validate dentries in encrypted directories to make sure we aren't potentially
  * caching stale dentries after a key has been added.
  */
-static int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
+int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	struct dentry *dir;
 	int err;
@@ -552,17 +576,17 @@ static int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
 
 	/*
 	 * Plaintext names are always valid, since fscrypt doesn't support
-	 * reverting to ciphertext names without evicting the directory's inode
+	 * reverting to no-key names without evicting the directory's inode
 	 * -- which implies eviction of the dentries in the directory.
 	 */
-	if (!(dentry->d_flags & DCACHE_ENCRYPTED_NAME))
+	if (!(dentry->d_flags & DCACHE_NOKEY_NAME))
 		return 1;
 
 	/*
-	 * Ciphertext name; valid if the directory's key is still unavailable.
+	 * No-key name; valid if the directory's key is still unavailable.
 	 *
-	 * Although fscrypt forbids rename() on ciphertext names, we still must
-	 * use dget_parent() here rather than use ->d_parent directly.  That's
+	 * Although fscrypt forbids rename() on no-key names, we still must use
+	 * dget_parent() here rather than use ->d_parent directly.  That's
 	 * because a corrupted fs image may contain directory hard links, which
 	 * the VFS handles by moving the directory's dentry tree in the dcache
 	 * each time ->lookup() finds the directory and it already has a dentry
@@ -583,7 +607,4 @@ static int fscrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
 
 	return valid;
 }
-
-const struct dentry_operations fscrypt_d_ops = {
-	.d_revalidate = fscrypt_d_revalidate,
-};
+EXPORT_SYMBOL_GPL(fscrypt_d_revalidate);

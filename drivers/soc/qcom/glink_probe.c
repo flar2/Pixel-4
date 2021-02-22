@@ -137,8 +137,6 @@ static int glink_ssr_ssr_cb(struct notifier_block *this,
 	if (!dev || !ssr->ept)
 		goto out;
 
-	kref_get(&ssr->refcount);
-
 	if (code == SUBSYS_AFTER_SHUTDOWN) {
 		ssr->seq_num++;
 		reinit_completion(&ssr->completion);

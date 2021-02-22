@@ -55,6 +55,7 @@ config ARCH_BCM_IPROC
 config ARCH_BERLIN
 	bool "Marvell Berlin SoC Family"
 	select DW_APB_ICTL
+	select DW_APB_TIMER_OF
 	select GPIOLIB
 	select PINCTRL
 	help
@@ -362,6 +363,11 @@ config ARCH_ZYNQMP
 	bool "Xilinx ZynqMP Family"
 	help
 	  This enables support for Xilinx ZynqMP Family
+
+config BOARD_SUNFISH
+	bool "Google Sunfish Family"
+	depends on ARCH_QCOM
+	select ARCH_SM6150
 
 config BOARD_FLORAL
 	bool "Google Floral Family"

@@ -4920,6 +4920,133 @@ out_put_task:
 	return retval;
 }
 
+char sched_lib_name[LIB_PATH_LENGTH];
+unsigned int sched_lib_mask_force;
+struct libname_node {
+	char *name;
+	struct list_head list;
+};
+static LIST_HEAD(__sched_lib_name_list);
+static DEFINE_SPINLOCK(__sched_lib_name_lock);
+
+/*
+ * A sysctl callback for handling 'sched_lib_name' operation. Except processing
+ * the data with the usual function 'proc_dostring()', additionally tokenize the
+ * input text with the dilimiter ',' and store in a linked list
+ * '__sched_lib_name_list'.
+ */
+int sysctl_sched_lib_name_handler(struct ctl_table *table, int write,
+				  void __user *buffer, size_t *lenp,
+				  loff_t *ppos)
+{
+	int ret;
+	char *curr, *next;
+	char dup_sched_lib_name[LIB_PATH_LENGTH];
+	struct libname_node *pos, *tmp;
+
+	ret = proc_dostring(table, write, buffer, lenp, ppos);
+	if (write && !ret) {
+		spin_lock(&__sched_lib_name_lock);
+		/* Free the old list. */
+		if (!list_empty(&__sched_lib_name_list)) {
+			list_for_each_entry_safe (
+				pos, tmp, &__sched_lib_name_list, list) {
+				list_del(&pos->list);
+				kfree(pos->name);
+				kfree(pos);
+			}
+		}
+
+		if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0) {
+			spin_unlock(&__sched_lib_name_lock);
+			return 0;
+		}
+
+		/* Split sched_lib_name by ',' and store in a linked list. */
+		strlcpy(dup_sched_lib_name, sched_lib_name, LIB_PATH_LENGTH);
+		next = dup_sched_lib_name;
+		while ((curr = strsep(&next, ",")) != NULL) {
+			pos = kmalloc(sizeof(struct libname_node), GFP_KERNEL);
+			pos->name = kstrdup(curr, GFP_KERNEL);
+			list_add_tail(&pos->list, &__sched_lib_name_list);
+		}
+		spin_unlock(&__sched_lib_name_lock);
+	}
+
+	return ret;
+}
+
+bool is_sched_lib_based_app(pid_t pid)
+{
+	const char *name = NULL;
+	struct vm_area_struct *vma;
+	char path_buf[LIB_PATH_LENGTH];
+	bool found = false;
+	struct task_struct *p;
+	struct mm_struct *mm;
+	struct libname_node *pos;
+
+	if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0)
+		return false;
+
+	rcu_read_lock();
+
+	p = find_process_by_pid(pid);
+	if (!p) {
+		rcu_read_unlock();
+		return false;
+	}
+
+	/* Prevent p going away */
+	get_task_struct(p);
+	rcu_read_unlock();
+
+	spin_lock(&__sched_lib_name_lock);
+	/* Check if the task name equals any of the sched_lib_name list. */
+	list_for_each_entry (pos, &__sched_lib_name_list, list) {
+		if (!strncmp(p->comm, pos->name, LIB_PATH_LENGTH)) {
+			found = true;
+			spin_unlock(&__sched_lib_name_lock);
+			goto put_task_struct;
+		}
+	}
+	spin_unlock(&__sched_lib_name_lock);
+
+	mm = get_task_mm(p);
+	if (!mm)
+		goto put_task_struct;
+
+	down_read(&mm->mmap_sem);
+	for (vma = mm->mmap; vma ; vma = vma->vm_next) {
+		if (vma->vm_file && vma->vm_flags & VM_EXEC) {
+			name = d_path(&vma->vm_file->f_path,
+					path_buf, LIB_PATH_LENGTH);
+			if (IS_ERR(name))
+				goto release_sem;
+
+			/* Check if the file name includes any of the
+			 * sched_lib_name list. */
+			spin_lock(&__sched_lib_name_lock);
+			list_for_each_entry (pos, &__sched_lib_name_list,
+					     list) {
+				if (strnstr(name, pos->name,
+					    strnlen(name, LIB_PATH_LENGTH))) {
+					found = true;
+					break;
+				}
+			}
+			spin_unlock(&__sched_lib_name_lock);
+		}
+	}
+
+release_sem:
+	up_read(&mm->mmap_sem);
+	mmput(mm);
+put_task_struct:
+	put_task_struct(p);
+	return found;
+}
+
 static int get_user_cpu_mask(unsigned long __user *user_mask_ptr, unsigned len,
 			     struct cpumask *new_mask)
 {
@@ -6820,9 +6947,15 @@ static int find_capacity_margin_levels(void)
 }
 
 static void sched_update_up_migrate_values(int cap_margin_levels,
-				const struct cpumask *cluster_cpus[])
+			const struct cpumask *cluster_cpus[], bool boosted)
 {
 	int i, cpu;
+	unsigned int *sched_capacity_margin_up_array = boosted ?
+			sched_capacity_margin_up_boosted :
+			sched_capacity_margin_up,
+		     *sysctl_sched_capacity_margin_up_array = boosted ?
+			sysctl_sched_capacity_margin_up_boosted :
+			sysctl_sched_capacity_margin_up;
 
 	if (cap_margin_levels > 1) {
 		/*
@@ -6832,19 +6965,25 @@ static void sched_update_up_migrate_values(int cap_margin_levels,
 		for (i = 0; i < cap_margin_levels; i++)
 			if (cluster_cpus[i])
 				for_each_cpu(cpu, cluster_cpus[i])
-					sched_capacity_margin_up[cpu] =
-					sysctl_sched_capacity_margin_up[i];
+				    sched_capacity_margin_up_array[cpu] =
+				    sysctl_sched_capacity_margin_up_array[i];
 	} else {
 		for_each_possible_cpu(cpu)
-			sched_capacity_margin_up[cpu] =
-				sysctl_sched_capacity_margin_up[0];
+			sched_capacity_margin_up_array[cpu] =
+				sysctl_sched_capacity_margin_up_array[0];
 	}
 }
 
 static void sched_update_down_migrate_values(int cap_margin_levels,
-				const struct cpumask *cluster_cpus[])
+			const struct cpumask *cluster_cpus[], bool boosted)
 {
 	int i, cpu;
+	unsigned int *sched_capacity_margin_down_array = boosted ?
+			sched_capacity_margin_down_boosted :
+			sched_capacity_margin_down,
+		      *sysctl_sched_capacity_margin_down_array = boosted ?
+			sysctl_sched_capacity_margin_down_boosted :
+			sysctl_sched_capacity_margin_down;
 
 	if (cap_margin_levels > 1) {
 		/*
@@ -6853,20 +6992,23 @@ static void sched_update_down_migrate_values(int cap_margin_levels,
 		for (i = 0; i < cap_margin_levels; i++)
 			if (cluster_cpus[i+1])
 				for_each_cpu(cpu, cluster_cpus[i+1])
-					sched_capacity_margin_down[cpu] =
-					sysctl_sched_capacity_margin_down[i];
+				    sched_capacity_margin_down_array[cpu] =
+				    sysctl_sched_capacity_margin_down_array[i];
 	} else {
 		for_each_possible_cpu(cpu)
-			sched_capacity_margin_down[cpu] =
-				sysctl_sched_capacity_margin_down[0];
+			sched_capacity_margin_down_array[cpu] =
+				sysctl_sched_capacity_margin_down_array[0];
 	}
 }
 
 static void sched_update_updown_migrate_values(unsigned int *data,
-					      int cap_margin_levels)
+					    int cap_margin_levels, bool boosted)
 {
 	int i, cpu;
 	static const struct cpumask *cluster_cpus[MAX_CLUSTERS];
+	unsigned int *sysctl_sched_capacity_margin_up_array = boosted ?
+			sysctl_sched_capacity_margin_up_boosted :
+			sysctl_sched_capacity_margin_up;
 
 	for (i = cpu = 0; (!cluster_cpus[i]) &&
 				cpu < num_possible_cpus(); i++) {
@@ -6874,22 +7016,29 @@ static void sched_update_updown_migrate_values(unsigned int *data,
 		cpu += cpumask_weight(topology_core_cpumask(cpu));
 	}
 
-	if (data == &sysctl_sched_capacity_margin_up[0])
-		sched_update_up_migrate_values(cap_margin_levels, cluster_cpus);
+	if (data == &sysctl_sched_capacity_margin_up_array[0])
+		sched_update_up_migrate_values(cap_margin_levels,
+					       cluster_cpus, boosted);
 	else
 		sched_update_down_migrate_values(cap_margin_levels,
-						 cluster_cpus);
+						 cluster_cpus, boosted);
 }
 
-int sched_updown_migrate_handler(struct ctl_table *table, int write,
+static int __sched_updown_migrate_handler(struct ctl_table *table, int write,
 				 void __user *buffer, size_t *lenp,
-				 loff_t *ppos)
+				 loff_t *ppos, bool boosted)
 {
 	int ret, i;
 	unsigned int *data = (unsigned int *)table->data;
 	unsigned int *old_val;
 	static DEFINE_MUTEX(mutex);
 	static int cap_margin_levels = -1;
+	unsigned int *sysctl_sched_capacity_margin_up_array = boosted ?
+			sysctl_sched_capacity_margin_up_boosted :
+			sysctl_sched_capacity_margin_up,
+		     *sysctl_sched_capacity_margin_down_array = boosted ?
+			sysctl_sched_capacity_margin_down_boosted :
+			sysctl_sched_capacity_margin_down;
 
 	mutex_lock(&mutex);
 
@@ -6930,15 +7079,15 @@ int sched_updown_migrate_handler(struct ctl_table *table, int write,
 	}
 
 	for (i = 0; i < cap_margin_levels; i++) {
-		if (sysctl_sched_capacity_margin_up[i] >
-				sysctl_sched_capacity_margin_down[i]) {
+		if (sysctl_sched_capacity_margin_up_array[i] >
+				sysctl_sched_capacity_margin_down_array[i]) {
 			memcpy(data, old_val, table->maxlen);
 			ret = -EINVAL;
 			goto free_old_val;
 		}
 	}
 
-	sched_update_updown_migrate_values(data, cap_margin_levels);
+	sched_update_updown_migrate_values(data, cap_margin_levels, boosted);
 
 free_old_val:
 	kfree(old_val);
@@ -6946,6 +7095,22 @@ unlock_mutex:
 	mutex_unlock(&mutex);
 
 	return ret;
+}
+
+int sched_updown_migrate_handler(struct ctl_table *table, int write,
+				 void __user *buffer, size_t *lenp,
+				 loff_t *ppos)
+{
+	return __sched_updown_migrate_handler(table, write, buffer,
+					      lenp, ppos, false);
+}
+
+int sched_updown_migrate_handler_boosted(struct ctl_table *table, int write,
+				 void __user *buffer, size_t *lenp,
+				 loff_t *ppos)
+{
+	return __sched_updown_migrate_handler(table, write, buffer,
+					      lenp, ppos, true);
 }
 #endif
 
