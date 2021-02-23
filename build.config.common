@@ -1,15 +1,17 @@
 ARCH=arm64
 BRANCH=android-msm-pixel-4.19
+KMI_GENERATION=0
 CROSS_COMPILE=aarch64-linux-android-
 CROSS_COMPILE_ARM32=arm-linux-androideabi-
 CROSS_COMPILE_COMPAT=$CROSS_COMPILE_ARM32
 NM=llvm-nm
 OBJCOPY=llvm-objcopy
-CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r383902/bin
+DEPMOD=depmod
+CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r399163b/bin
 BUILDTOOLS_PREBUILT_BIN=build/build-tools/path/linux-x86
 
 EXTRA_CMDS=''
-LD_LIBRARY_PATH=${ROOT_DIR}/prebuilts-master/clang/host/linux-x86/clang-r383902/lib64:$LD_LIBRARY_PATH
+LD_LIBRARY_PATH=${ROOT_DIR}/prebuilts-master/clang/host/linux-x86/clang-r399163b/lib64:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH
 LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
 LINUX_GCC_CROSS_COMPILE_ARM32_PREBUILTS_BIN=prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin
@@ -30,9 +32,9 @@ vmlinux
 System.map
 .config
 "
+COMPRESS_UNSTRIPPED_MODULES=1
 UNSTRIPPED_MODULES="
-wlan.ko
+*.ko
 "
 IN_KERNEL_MODULES=1
 STOP_SHIP_TRACEPRINTK=1
-DO_NOT_STRIP_MODULES=1

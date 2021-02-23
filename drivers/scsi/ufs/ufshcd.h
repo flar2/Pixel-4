@@ -147,6 +147,7 @@ enum {
 	UFS_ERR_CLEAR_PEND_XFER_TM,
 	UFS_ERR_INT_FATAL_ERRORS,
 	UFS_ERR_INT_UIC_ERROR,
+	UFS_ERR_HOST_RESET,
 
 	/* other errors */
 	UFS_ERR_HIBERN8_ENTER,
@@ -442,6 +443,7 @@ struct ufs_hba_crypto_variant_ops {
 	int (*prepare_lrbp_crypto)(struct ufs_hba *hba,
 				   struct scsi_cmnd *cmd,
 				   struct ufshcd_lrb *lrbp);
+	int (*map_sg_crypto)(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
 	int (*complete_lrbp_crypto)(struct ufs_hba *hba,
 				    struct scsi_cmnd *cmd,
 				    struct ufshcd_lrb *lrbp);

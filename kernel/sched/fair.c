@@ -2754,7 +2754,7 @@ void task_tick_numa(struct rq *rq, struct task_struct *curr)
 	/*
 	 * We don't care about NUMA placement if we don't have memory.
 	 */
-	if (!curr->mm || (curr->flags & PF_EXITING) || work->next != work)
+	if ((curr->flags & (PF_EXITING | PF_KTHREAD)) || work->next != work)
 		return;
 
 	/*
@@ -6251,15 +6251,20 @@ schedtune_margin(unsigned long signal, long boost, long capacity)
 	return margin;
 }
 
-inline int
-schedtune_cpu_margin(unsigned long util, int cpu)
+inline long
+schedtune_cpu_margin_with(unsigned long util, int cpu, struct task_struct *p)
 {
-	int boost = schedtune_cpu_boost(cpu);
+	int boost = schedtune_cpu_boost_with(cpu, p);
+	long margin;
 
 	if (boost == 0)
-		return 0;
+		margin = 0;
+	else
+		margin = schedtune_margin(util, boost, capacity_orig_of(cpu));
 
-	return schedtune_margin(util, boost, capacity_orig_of(cpu));
+	trace_sched_boost_cpu(cpu, util, margin);
+
+	return margin;
 }
 
 long schedtune_task_margin(struct task_struct *task)
@@ -6277,23 +6282,24 @@ long schedtune_task_margin(struct task_struct *task)
 	return margin;
 }
 
+#ifdef CONFIG_SCHED_WALT
 unsigned long
 stune_util(int cpu, unsigned long other_util,
 		 struct sched_walt_cpu_load *walt_load)
 {
-	unsigned long util = min_t(unsigned long, SCHED_CAPACITY_SCALE,
-				   cpu_util_freq(cpu, walt_load) + other_util);
-	long margin = schedtune_cpu_margin(util, cpu);
-
-	trace_sched_boost_cpu(cpu, util, margin);
+	unsigned long util =
+		min_t(unsigned long, SCHED_CAPACITY_SCALE,
+		      cpu_util_freq_walt(cpu, walt_load) + other_util);
+	long margin = schedtune_cpu_margin_with(util, cpu, NULL);
 
 	return util + margin;
 }
 
+#endif
 #else /* CONFIG_SCHED_TUNE */
 
-inline int
-schedtune_cpu_margin(unsigned long util, int cpu)
+inline long
+schedtune_cpu_margin_with(unsigned long util, int cpu, struct task_struct *p)
 {
 	return 0;
 }
@@ -7076,10 +7082,6 @@ static int get_start_cpu(struct task_struct *p, bool sync_boost)
 			rd->max_cap_orig_cpu : rd->mid_cap_orig_cpu;
 	}
 
-	if (start_cpu == rd->mid_cap_orig_cpu &&
-			!task_demand_fits(p, start_cpu))
-		start_cpu = rd->max_cap_orig_cpu;
-
 	return start_cpu;
 }
 
@@ -7110,6 +7112,7 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 	struct sched_group *sg;
 	int best_active_cpu = -1;
 	int best_idle_cpu = -1;
+	bool idle_fit_cpu_found = false;
 	int best_prioritized_cpu = -1;
 	int target_cpu = -1;
 	int backup_cpu = -1;
@@ -7234,11 +7237,19 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 				prioritized_task && !is_min_capacity_cpu(i) &&
 				per_cpu(prioritized_task_nr, i) == 0;
 
-			if ((!(prefer_idle && idle_cpu(i)) &&
-			     !best_prioritized_candidate &&
-			     new_util > capacity_orig) ||
-			    (is_min_capacity_cpu(i) &&
-			     !task_fits_capacity(p, capacity_orig, i)))
+			if (!(prefer_idle && idle_cpu(i)) &&
+			    !best_prioritized_candidate &&
+			    new_util > capacity_orig)
+				continue;
+
+			/*
+			 * If start cpu is mid core, we don't want to loop
+			 * back to little cores, unless the task prefers
+			 * idle cpu and could not find one in mid/max core.
+			 */
+			if (!(prefer_idle && idle_fit_cpu_found == false) &&
+			    is_min_capacity_cpu(i) &&
+			    !task_fits_capacity(p, capacity_orig, i))
 				continue;
 
 			/*
@@ -7326,6 +7337,11 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 					target_capacity = capacity_orig;
 					shallowest_idle_cstate = idle_idx;
 					best_idle_util = new_util;
+
+					if (is_min_capacity_cpu(start_cpu) ==
+					    is_min_capacity_cpu(i))
+						idle_fit_cpu_found = true;
+
 					best_idle_cpu = i;
 					continue;
 				}
@@ -9150,7 +9166,15 @@ redo:
 		if (!can_migrate_task(p, env))
 			goto next;
 
-		load = task_h_load(p);
+		/*
+		 * Depending of the number of CPUs and tasks and the
+		 * cgroup hierarchy, task_h_load() can return a null
+		 * value. Make sure that env->imbalance decreases
+		 * otherwise detach_tasks() will stop only after
+		 * detaching up to loop_max tasks.
+		 */
+		load = max_t(unsigned long, task_h_load(p), 1);
+
 
 		if (sched_feat(LB_MIN) && load < 16 && !env->sd->nr_balance_failed)
 			goto next;
@@ -11615,7 +11639,12 @@ static void kick_ilb(unsigned int flags)
 {
 	int ilb_cpu;
 
-	nohz.next_balance++;
+	/*
+	 * Increase nohz.next_balance only when if full ilb is triggered but
+	 * not if we only update stats.
+	 */
+	if (flags & NOHZ_BALANCE_KICK)
+		nohz.next_balance = jiffies+1;
 
 	ilb_cpu = find_new_ilb();
 
@@ -11928,6 +11957,14 @@ static bool _nohz_idle_balance(struct rq *this_rq, unsigned int flags,
 		}
 	}
 
+	/*
+	 * next_balance will be updated only when there is a need.
+	 * When the CPU is attached to null domain for ex, it will not be
+	 * updated.
+	 */
+	if (likely(update_next_balance))
+		nohz.next_balance = next_balance;
+
 	/* Newly idle CPU doesn't need an update */
 	if (idle != CPU_NEWLY_IDLE) {
 		update_blocked_averages(this_cpu);
@@ -11947,14 +11984,6 @@ abort:
 	/* There is still blocked load, enable periodic update */
 	if (has_blocked_load)
 		WRITE_ONCE(nohz.has_blocked, 1);
-
-	/*
-	 * next_balance will be updated only when there is a need.
-	 * When the CPU is attached to null domain for ex, it will not be
-	 * updated.
-	 */
-	if (likely(update_next_balance))
-		nohz.next_balance = next_balance;
 
 	return ret;
 }

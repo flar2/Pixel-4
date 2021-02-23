@@ -553,6 +553,20 @@ static int hlosvmperm[1] = {PERM_READ | PERM_WRITE | PERM_EXEC};
 
 static void fastrpc_pm_awake(struct fastrpc_file *fl, int channel_type);
 
+static void track_buffer_alloc(int cid, size_t size)
+{
+	long total = atomic_long_add_return(size, &total_dma_bytes);
+
+	trace_fastrpc_dma_stat(cid, size, total);
+}
+
+static void track_buffer_free(int cid, size_t size)
+{
+	long total = atomic_long_sub_return(size, &total_dma_bytes);
+
+	trace_fastrpc_dma_stat(cid, -size, total);
+}
+
 static inline int64_t getnstimediff(struct timespec64 *start)
 {
 	int64_t ns;
@@ -680,7 +694,7 @@ static void fastrpc_buf_free(struct fastrpc_buf *buf, int cache)
 				srcVM, 2, destVM, destVMperm, 1);
 		}
 		trace_fastrpc_dma_free(fl->cid, buf->phys, buf->size);
-		atomic_long_sub(buf->size, &total_dma_bytes);
+		track_buffer_free(fl->cid, buf->size);
 		dma_free_attrs(fl->sctx->smmu.dev, buf->size, buf->virt,
 					buf->phys, buf->dma_attr);
 	}
@@ -873,9 +887,11 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 	}
 	if (map->flags == ADSP_MMAP_HEAP_ADDR ||
 				map->flags == ADSP_MMAP_REMOTE_HEAP_ADDR) {
+		spin_lock(&me->hlock);
 		map->refs--;
 		if (!map->refs)
 			hlist_del_init(&map->hn);
+		spin_unlock(&me->hlock);
 		if (map->refs > 0)
 			return;
 	} else {
@@ -894,7 +910,8 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 			return;
 		}
 		trace_fastrpc_dma_free(-1, map->phys, map->size);
-		atomic_long_sub(map->size, &total_dma_bytes);
+
+		track_buffer_free(cid, map->size);
 		if (map->phys) {
 			dma_free_attrs(me->dev, map->size, (void *)map->va,
 			(dma_addr_t)map->phys, (unsigned long)map->attr);
@@ -983,7 +1000,7 @@ static int fastrpc_mmap_create(struct fastrpc_file *fl, int fd,
 			goto bail;
 		trace_fastrpc_dma_alloc(fl->cid, (uint64_t)region_phys, len,
 			(unsigned long)map->attr, mflags);
-		atomic_long_add(len, &total_dma_bytes);
+		track_buffer_alloc(fl->cid, len);
 		map->phys = (uintptr_t)region_phys;
 		map->size = len;
 		map->va = (uintptr_t)region_vaddr;
@@ -1210,8 +1227,7 @@ static int fastrpc_buf_alloc(struct fastrpc_file *fl, size_t size,
 		buf->phys += ((uint64_t)fl->sctx->smmu.cb << 32);
 	trace_fastrpc_dma_alloc(fl->cid, buf->phys, size,
 		dma_attr, (int)rflags);
-
-	atomic_long_add(size, &total_dma_bytes);
+	track_buffer_alloc(fl->cid, size);
 	vmid = fl->apps->channel[fl->cid].vmid;
 	if (vmid) {
 		int srcVM[1] = {VMID_HLOS};
@@ -5023,7 +5039,7 @@ bail:
 }
 
 static ssize_t total_dma_kb_show(struct kobject *kobj,
-	struct kobj_attribute *attr, char *buf)
+		struct kobj_attribute *attr, char *buf)
 {
 	u64 size_in_bytes = atomic_long_read(&total_dma_bytes);
 
@@ -5042,6 +5058,7 @@ ATTRIBUTE_GROUPS(fastrpc_device);
 
 static int fastrpc_init_sysfs(void)
 {
+	struct kobject *fastrpc_kobj;
 	int ret;
 
 	fastrpc_kobj = kobject_create_and_add("fastrpc", kernel_kobj);
@@ -5051,6 +5068,7 @@ static int fastrpc_init_sysfs(void)
 	ret = sysfs_create_groups(fastrpc_kobj, fastrpc_device_groups);
 	if (ret) {
 		kobject_put(fastrpc_kobj);
+		fastrpc_kobj = NULL;
 		return ret;
 	}
 
@@ -5264,6 +5282,7 @@ static void __exit fastrpc_device_exit(void)
 	if (fastrpc_kobj) {
 		sysfs_remove_groups(fastrpc_kobj, fastrpc_device_groups);
 		kobject_put(fastrpc_kobj);
+		fastrpc_kobj = NULL;
 	}
 }
 

@@ -1461,7 +1461,7 @@ int smblib_set_icl_current(struct smb_charger *chg, int icl_ua)
 	int rc = 0;
 	enum icl_override_mode icl_override = HW_AUTO_MODE;
 	/* suspend if 25mA or less is requested */
-	bool suspend = (icl_ua <= SUSPEND_ICL_MAX);
+	bool suspend = (icl_ua <= USBIN_25MA);
 
 	if (chg->chg_param.smb_version == PMI632_SUBTYPE)
 		schgm_flash_torch_priority(chg, suspend ? TORCH_BOOST_MODE :
@@ -1784,21 +1784,31 @@ static int smblib_dc_suspend_vote_callback(struct votable *votable, void *data,
 	return smblib_set_dc_suspend(chg, (bool)suspend);
 }
 
+#define DC_ICL_CHANGE_RERUN_MS		(1 * 1000)
 static int smblib_dc_icl_vote_callback(struct votable *votable, void *data,
 			int icl_ua, const char *client)
 {
 	struct smb_charger *chg = data;
 	int rc = 0;
-	bool suspend;
+	bool suspend, rerun_aicl = false;
+	int cur_icl = 0;
 
 	if (icl_ua < 0) {
 		smblib_dbg(chg, PR_MISC, "No Voter hence suspending\n");
 		icl_ua = 0;
 	}
 
-	suspend = (icl_ua <= SUSPEND_ICL_MAX);
+	suspend = (icl_ua <= USBIN_25MA);
 	if (suspend)
 		goto suspend;
+
+	rc = smblib_get_charge_param(chg, &chg->param.dc_icl, &cur_icl);
+	if (rc == 0) {
+		if ((cur_icl < icl_ua) &&
+		    !chg->dc_icl_rerun &&
+		    chg->dcin_aicl_done)
+			rerun_aicl = true;
+	}
 
 	rc = smblib_set_charge_param(chg, &chg->param.dc_icl, icl_ua);
 	if (rc < 0) {
@@ -1813,6 +1823,14 @@ suspend:
 		smblib_err(chg, "Couldn't vote to %s DC rc=%d\n",
 			suspend ? "suspend" : "resume", rc);
 		return rc;
+	}
+
+	if (rerun_aicl) {
+		dev_info(chg->dev, "AICL rerun after 1 sec because icl: %d->%d\n",
+			 cur_icl, icl_ua);
+		mod_timer(&chg->dc_icl_timer,
+			  jiffies +
+			  msecs_to_jiffies(DC_ICL_CHANGE_RERUN_MS));
 	}
 	return rc;
 }
@@ -4764,7 +4782,7 @@ int smblib_set_prop_sdp_current_max(struct smb_charger *chg,
 		if (pval.intval)
 			rc = smblib_handle_usb_current(chg, val->intval);
 	} else if (chg->system_suspend_supported) {
-		if (val->intval <= SUSPEND_ICL_MAX)
+		if (val->intval <= USBIN_25MA)
 			rc = vote(chg->usb_icl_votable,
 				PD_SUSPEND_SUPPORTED_VOTER, true, val->intval);
 		else
@@ -7608,8 +7626,7 @@ irqreturn_t switcher_power_ok_irq_handler(int irq, void *data)
 
 	/* skip suspending input if its already suspended by some other voter */
 	usb_icl = get_effective_result(chg->usb_icl_votable);
-	if ((stat & USE_USBIN_BIT) && usb_icl >= 0 &&
-	    usb_icl <= SUSPEND_ICL_MAX)
+	if ((stat & USE_USBIN_BIT) && usb_icl >= 0 && usb_icl <= USBIN_25MA)
 		return IRQ_HANDLED;
 
 	if (stat & USE_DCIN_BIT)
