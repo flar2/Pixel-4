@@ -18,10 +18,12 @@
 #define P9221_WLC_VOTER				"WLC_VOTER"
 #define P9221_USER_VOTER			"WLC_USER_VOTER"
 #define P9221_OCP_VOTER				"OCP_VOTER"
+#define P9382A_LOW_POWER_TX_VOTER		"LOW_POWER_TX_VOTER"
 #define P9221_DC_ICL_BPP_UA			700000
 #define P9221_DC_ICL_BPP_RAMP_DEFAULT_UA	900000
 #define P9221_DC_ICL_BPP_RAMP_DELAY_DEFAULT_MS	(7 * 60 * 1000)  /* 7 mins */
 #define P9221_DC_ICL_EPP_UA			1100000
+#define P9221_DC_ICL_LOW_POWER_UA		600000
 #define P9221_EPP_THRESHOLD_UV			7000000
 #define P9221_MAX_VOUT_SET_MV_DEFAULT		9000
 
@@ -235,7 +237,9 @@
 
 #define P9382A_MODE_TXMODE			BIT(2)
 
-
+#define FAST_SERIAL_ID_HEADER			0x4F
+#define ACCESSORY_TYPE_MASK			0x7
+#define ACCESSORY_TYPE_LOW_POWER_TX		BIT(2)
 
 enum p9221_align_mfg_chk_state {
 	ALIGN_MFG_FAILED = -1,
@@ -266,6 +270,7 @@ struct p9221_charger_platform_data {
 	u32				alignment_scalar;
 	u32				alignment_hysteresis;
 	u32				icl_ramp_delay_ms;
+	u32				power_mitigate_threshold;
 };
 
 struct p9221_charger_data {
@@ -283,6 +288,7 @@ struct p9221_charger_data {
 	struct delayed_work		align_work;
 	struct delayed_work		tx_work;
 	struct delayed_work		icl_ramp_work;
+	struct delayed_work		power_mitigation_work;
 	struct work_struct		uevent_work;
 	struct alarm			icl_ramp_alarm;
 	struct timer_list		vrect_timer;
@@ -332,6 +338,11 @@ struct p9221_charger_data {
 	u32				current_sample_cnt;
 	struct delayed_work		dcin_pon_work;
 	bool				is_mfg_google;
+	bool				is_low_power_tx;
+	u32				mitigate_threshold;
+	u32				fod_cnt;
+	bool				trigger_power_mitigation;
+	bool                            wait_for_online;
 };
 
 struct p9221_prop_reg_map_entry {

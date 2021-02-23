@@ -886,6 +886,8 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 
 	q->backing_dev_info->ra_pages =
 			(VM_MAX_READAHEAD * 1024) / PAGE_SIZE;
+	q->backing_dev_info->io_pages =
+			(VM_MAX_READAHEAD * 1024) / PAGE_SIZE;
 	q->backing_dev_info->capabilities = BDI_CAP_CGROUP_WRITEBACK;
 	q->backing_dev_info->name = "block";
 	q->node = node_id;
@@ -2363,7 +2365,7 @@ blk_qc_t submit_bio(struct bio *bio)
 		psi_memstall_enter(&pflags);
 
 	if (bio->bi_alloc_ts)
-		mm_event_end(BLK_READ_SUBMIT_BIO, bio->bi_alloc_ts);
+		mm_event_record(BLK_READ_SUBMIT_BIO, bio->bi_alloc_ts);
 
 	ret = generic_make_request(bio);
 

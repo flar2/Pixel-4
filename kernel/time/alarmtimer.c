@@ -131,6 +131,7 @@ static int alarmtimer_rtc_add_device(struct device *dev,
 		ws = __ws;
 		__ws = NULL;
 	}
+
 unlock:
 	spin_unlock_irqrestore(&rtcdev_lock, flags);
 
