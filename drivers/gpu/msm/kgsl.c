@@ -62,6 +62,7 @@ struct dmabuf_list_entry {
 };
 
 struct kgsl_dma_buf_meta {
+	struct kgsl_device *device;
 	struct kgsl_mem_entry *entry;
 	struct dma_buf_attachment *attach;
 	struct dma_buf *dmabuf;
@@ -239,8 +240,7 @@ static struct kgsl_mem_entry *kgsl_mem_entry_create(void)
 	return entry;
 }
 
-static void add_dmabuf_list(struct kgsl_device *device,
-				struct kgsl_dma_buf_meta *meta)
+static void add_dmabuf_list(struct kgsl_dma_buf_meta *meta)
 {
 	struct dmabuf_list_entry *dle;
 	struct page *page;
@@ -273,14 +273,13 @@ static void add_dmabuf_list(struct kgsl_device *device,
 		list_add(&dle->node, &kgsl_dmabuf_list);
 		meta->dle = dle;
 		list_add(&meta->node, &dle->dmabuf_list);
-		kgsl_trace_gpu_mem_total(device,
+		kgsl_trace_gpu_mem_total(meta->device,
 				 meta->entry->memdesc.size);
 	}
 	spin_unlock(&kgsl_dmabuf_lock);
 }
 
-static void remove_dmabuf_list(struct kgsl_device *device,
-				struct kgsl_dma_buf_meta *meta)
+static void remove_dmabuf_list(struct kgsl_dma_buf_meta *meta)
 {
 	struct dmabuf_list_entry *dle = meta->dle;
 
@@ -292,18 +291,17 @@ static void remove_dmabuf_list(struct kgsl_device *device,
 	if (list_empty(&dle->dmabuf_list)) {
 		list_del(&dle->node);
 		kfree(dle);
-		kgsl_trace_gpu_mem_total(device,
+		kgsl_trace_gpu_mem_total(meta->device,
 				-(meta->entry->memdesc.size));
 	}
 	spin_unlock(&kgsl_dmabuf_lock);
 }
 
 #ifdef CONFIG_DMA_SHARED_BUFFER
-static void kgsl_destroy_ion(struct kgsl_device *device,
-				struct kgsl_dma_buf_meta *meta)
+static void kgsl_destroy_ion(struct kgsl_dma_buf_meta *meta)
 {
 	if (meta != NULL) {
-		remove_dmabuf_list(device, meta);
+		remove_dmabuf_list(meta);
 		dma_buf_unmap_attachment(meta->attach, meta->table,
 			DMA_BIDIRECTIONAL);
 		dma_buf_detach(meta->dmabuf, meta->attach);
@@ -312,22 +310,17 @@ static void kgsl_destroy_ion(struct kgsl_device *device,
 	}
 }
 #else
-static void kgsl_destroy_ion(struct kgsl_device *device,
-				struct kgsl_dma_buf_meta *meta)
+static void kgsl_destroy_ion(struct kgsl_dma_buf_meta *meta)
 {
 }
 #endif
 
 static void mem_entry_destroy(struct kgsl_mem_entry *entry)
 {
-	struct kgsl_device *device = NULL;
 	unsigned int memtype;
 
 	if (entry == NULL)
 		return;
-
-	if (entry->memdesc.pagetable != NULL)
-		device = KGSL_MMU_DEVICE(entry->memdesc.pagetable->mmu);
 
 	/* pull out the memtype before the flags get cleared */
 	memtype = kgsl_memdesc_usermem_type(&entry->memdesc);
@@ -370,7 +363,7 @@ static void mem_entry_destroy(struct kgsl_mem_entry *entry)
 
 	switch (memtype) {
 	case KGSL_MEM_ENTRY_ION:
-		kgsl_destroy_ion(device, entry->priv_data);
+		kgsl_destroy_ion(entry->priv_data);
 		break;
 	default:
 		break;
@@ -2437,14 +2430,6 @@ long kgsl_ioctl_cmdstream_freememontimestamp_ctxtid(
 	return ret;
 }
 
-static inline int _check_region(unsigned long start, unsigned long size,
-				uint64_t len)
-{
-	uint64_t end = ((uint64_t) start) + size;
-
-	return (end > len);
-}
-
 static int check_vma_flags(struct vm_area_struct *vma,
 		unsigned int flags)
 {
@@ -2459,23 +2444,27 @@ static int check_vma_flags(struct vm_area_struct *vma,
 	return -EFAULT;
 }
 
-static int check_vma(struct vm_area_struct *vma, struct file *vmfile,
-		struct kgsl_memdesc *memdesc)
+static int check_vma(unsigned long hostptr, u64 size)
 {
-	if (vma == NULL || vma->vm_file != vmfile)
-		return -EINVAL;
+	struct vm_area_struct *vma;
+	unsigned long cur = hostptr;
 
-	/* userspace may not know the size, in which case use the whole vma */
-	if (memdesc->size == 0)
-		memdesc->size = vma->vm_end - vma->vm_start;
-	/* range checking */
-	if (vma->vm_start != memdesc->useraddr ||
-		(memdesc->useraddr + memdesc->size) != vma->vm_end)
-		return -EINVAL;
-	return check_vma_flags(vma, memdesc->flags);
+	while (cur < (hostptr + size)) {
+		vma = find_vma(current->mm, cur);
+		if (!vma)
+			return false;
+
+		/* Don't remap memory that we already own */
+		if (vma->vm_file && vma->vm_file->f_op == &kgsl_fops)
+			return false;
+
+		cur = vma->vm_end;
+	}
+
+	return true;
 }
 
-static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, struct file *vmfile)
+static int memdesc_sg_virt(struct kgsl_memdesc *memdesc)
 {
 	int ret = 0;
 	long npages = 0, i;
@@ -2498,18 +2487,16 @@ static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, struct file *vmfile)
 	}
 
 	down_read(&current->mm->mmap_sem);
-	/* If we have vmfile, make sure we map the correct vma and map it all */
-	if (vmfile != NULL)
-		ret = check_vma(find_vma(current->mm, memdesc->useraddr),
-				vmfile, memdesc);
-
-	if (ret == 0) {
-		npages = get_user_pages(memdesc->useraddr,
-					sglen, write, pages, NULL);
-		ret = (npages < 0) ? (int)npages : 0;
+	if (!check_vma(memdesc->useraddr, memdesc->size)) {
+		up_read(&current->mm->mmap_sem);
+		ret = -EFAULT;
+		goto out;
 	}
+
+	npages = get_user_pages(memdesc->useraddr, sglen, write, pages, NULL);
 	up_read(&current->mm->mmap_sem);
 
+	ret = (npages < 0) ? (int)npages : 0;
 	if (ret)
 		goto out;
 
@@ -2560,7 +2547,7 @@ static int kgsl_setup_anon_useraddr(struct kgsl_pagetable *pagetable,
 		entry->memdesc.gpuaddr = (uint64_t)  entry->memdesc.useraddr;
 	}
 
-	return memdesc_sg_virt(&entry->memdesc, NULL);
+	return memdesc_sg_virt(&entry->memdesc);
 }
 
 #ifdef CONFIG_DMA_SHARED_BUFFER
@@ -2843,7 +2830,7 @@ long kgsl_ioctl_gpuobj_import(struct kgsl_device_private *dev_priv,
 
 unmap:
 	if (kgsl_memdesc_usermem_type(&entry->memdesc) == KGSL_MEM_ENTRY_ION) {
-		kgsl_destroy_ion(dev_priv->device, entry->priv_data);
+		kgsl_destroy_ion(entry->priv_data);
 		entry->memdesc.sgt = NULL;
 	}
 
@@ -2944,6 +2931,7 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 	if (entry->memdesc.flags & KGSL_MEMFLAGS_IOCOHERENT)
 		attach->dma_map_attrs |= DMA_ATTR_SKIP_CPU_SYNC;
 
+	meta->device = device;
 	meta->dmabuf = dmabuf;
 	meta->attach = attach;
 	meta->entry = entry;
@@ -2988,7 +2976,7 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 		goto out;
 	}
 
-	add_dmabuf_list(device, meta);
+	add_dmabuf_list(meta);
 	entry->memdesc.size = PAGE_ALIGN(entry->memdesc.size);
 
 out:
@@ -3158,7 +3146,7 @@ long kgsl_ioctl_map_user_mem(struct kgsl_device_private *dev_priv,
 error_attach:
 	switch (kgsl_memdesc_usermem_type(&entry->memdesc)) {
 	case KGSL_MEM_ENTRY_ION:
-		kgsl_destroy_ion(dev_priv->device, entry->priv_data);
+		kgsl_destroy_ion(entry->priv_data);
 		entry->memdesc.sgt = NULL;
 		break;
 	default:
