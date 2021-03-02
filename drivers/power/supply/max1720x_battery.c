@@ -497,6 +497,7 @@ struct max1720x_chip {
 	u16 RConfig;
 	int batt_id;
 	int cycle_count;
+	int cycle_count_offset;
 	bool init_complete;
 	bool resume_complete;
 	u16 health_status;
@@ -1587,7 +1588,7 @@ static void max1720x_handle_update_nconvgcfg(struct max1720x_chip *chip,
 #define MAX17201_HIST_CYCLE_COUNT_OFFSET	0x4
 #define MAX17201_HIST_TIME_OFFSET		0xf
 
-static int max1720x_get_cycle_count_offset(const struct max1720x_chip *chip)
+static int max1720x_get_cycle_count_offset(struct max1720x_chip *chip)
 {
 	int offset = 0, i, history_count;
 	struct max1720x_history hi;
@@ -1595,16 +1596,23 @@ static int max1720x_get_cycle_count_offset(const struct max1720x_chip *chip)
 	if (!chip->history_page_size)
 		return 0;
 
+	mutex_lock(&chip->history_lock);
 	history_count = max1720x_history_read(&hi, chip);
+	if (history_count < 0) {
+		mutex_unlock(&chip->history_lock);
+		return 0;
+	}
+
 	for (i = 0; i < history_count; i++) {
 		u16 *entry = &hi.history[i * chip->history_page_size];
 
 		if (entry[MAX17201_HIST_CYCLE_COUNT_OFFSET] == 0 &&
 		    entry[MAX17201_HIST_TIME_OFFSET] != 0) {
-			offset = MAXIM_CYCLE_COUNT_RESET;
+			offset += MAXIM_CYCLE_COUNT_RESET;
 			break;
 		}
 	}
+	mutex_unlock(&chip->history_lock);
 
 	dev_dbg(chip->dev, "history_count=%d page_size=%d i=%d offset=%d\n",
 		history_count, chip->history_page_size, i, offset);
@@ -1623,11 +1631,14 @@ static int max1720x_get_cycle_count(struct max1720x_chip *chip)
 		return err;
 
 	cycle_count = reg_to_cycles(temp);
-	if (chip->cycle_count == -1 || cycle_count < chip->cycle_count)
-		cycle_count += max1720x_get_cycle_count_offset(chip);
+	if ((chip->cycle_count == -1) ||
+	    ((cycle_count + chip->cycle_count_offset) < chip->cycle_count))
+		chip->cycle_count_offset =
+			max1720x_get_cycle_count_offset(chip);
 
-	chip->cycle_count = cycle_count;
-	return cycle_count;
+	chip->cycle_count = cycle_count + chip->cycle_count_offset;
+
+	return chip->cycle_count;
 }
 
 static void max1720x_handle_update_empty_voltage(struct max1720x_chip *chip,
