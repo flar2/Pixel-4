@@ -3413,7 +3413,7 @@ QDF_STATUS wma_open(struct wlan_objmgr_psoc *psoc,
 	target_if_register_legacy_service_ready_cb(
 					wma_legacy_service_ready_event_handler);
 
-	WMA_LOGA("WMA --> wmi_unified_attach - success");
+	WMA_LOGI("WMA --> wmi_unified_attach - success");
 
 	/* store the wmi handle in tgt_if_handle */
 	tgt_psoc_info = wlan_psoc_get_tgt_if_handle(psoc);
