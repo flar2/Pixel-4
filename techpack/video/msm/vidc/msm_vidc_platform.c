@@ -287,8 +287,8 @@ static struct msm_vidc_codec_capability lito_capabilities_v0[] = {
 	   unknown as well, which creates a problem of allowing client
 	   to set higher level than supported */
 	{CAP_H264_LEVEL, ENC, H264, V4L2_MPEG_VIDEO_H264_LEVEL_1_0,
-	                            V4L2_MPEG_VIDEO_H264_LEVEL_6_0, 1,
-	                            V4L2_MPEG_VIDEO_H264_LEVEL_6_0},
+	                            V4L2_MPEG_VIDEO_H264_LEVEL_5_2, 1,
+	                            V4L2_MPEG_VIDEO_H264_LEVEL_5_2},
 	{CAP_HEVC_LEVEL, ENC, HEVC, V4L2_MPEG_VIDEO_HEVC_LEVEL_1,
 	                            V4L2_MPEG_VIDEO_HEVC_LEVEL_6, 1,
 	                            V4L2_MPEG_VIDEO_HEVC_LEVEL_6},
@@ -389,8 +389,8 @@ static struct msm_vidc_codec_capability lito_capabilities_v1[] = {
 	   unknown as well, which creates a problem of allowing client
 	   to set higher level than supported */
 	{CAP_H264_LEVEL, ENC, H264, V4L2_MPEG_VIDEO_H264_LEVEL_1_0,
-	                            V4L2_MPEG_VIDEO_H264_LEVEL_6_0, 1,
-	                            V4L2_MPEG_VIDEO_H264_LEVEL_6_0},
+	                            V4L2_MPEG_VIDEO_H264_LEVEL_5_2, 1,
+	                            V4L2_MPEG_VIDEO_H264_LEVEL_5_2},
 	{CAP_HEVC_LEVEL, ENC, HEVC, V4L2_MPEG_VIDEO_HEVC_LEVEL_1,
 	                            V4L2_MPEG_VIDEO_HEVC_LEVEL_6, 1,
 	                            V4L2_MPEG_VIDEO_HEVC_LEVEL_6},
@@ -633,7 +633,7 @@ static struct msm_vidc_codec_capability bengal_capabilities_v0[] = {
 	{CAP_SECURE_BITRATE, DOMAINS_ALL, CODECS_ALL, 1, 35000000, 1, 20000000},
 
 	/* All intra encoding usecase specific */
-	{CAP_ALLINTRA_MAX_FPS, ENC, H264|HEVC, 1, 30, 1, 30},
+	{CAP_ALLINTRA_MAX_FPS, ENC, H264|HEVC, 1, 60, 1, 30},
 
 	/* Image specific */
 	{CAP_HEVC_IMAGE_FRAME_WIDTH, ENC, HEVC, 128, 512, 1, 512},
@@ -697,7 +697,7 @@ static struct msm_vidc_codec_capability bengal_capabilities_v1[] = {
 	{CAP_SECURE_BITRATE, DOMAINS_ALL, CODECS_ALL, 1, 35000000, 1, 20000000},
 
 	/* All intra encoding usecase specific */
-	{CAP_ALLINTRA_MAX_FPS, ENC, H264|HEVC, 1, 30, 1, 30},
+	{CAP_ALLINTRA_MAX_FPS, ENC, H264|HEVC, 1, 60, 1, 30},
 
 	/* Image specific */
 	{CAP_HEVC_IMAGE_FRAME_WIDTH, ENC, HEVC, 128, 512, 1, 512},
@@ -2146,7 +2146,7 @@ static int msm_vidc_read_rank(
 		d_vpr_e("Failed to get ddr rank of device\n");
 		return num_ranks;
 	} else if (num_ranks == 1)
-		data->sku_version = SKU_VERSION_1;
+		data->sku_version = SKU_VERSION_0;
 
 	d_vpr_h("DDR Rank of device: %u", num_ranks);
 
