@@ -4966,8 +4966,8 @@ int sysctl_sched_lib_name_handler(struct ctl_table *table, int write,
 		strlcpy(dup_sched_lib_name, sched_lib_name, LIB_PATH_LENGTH);
 		next = dup_sched_lib_name;
 		while ((curr = strsep(&next, ",")) != NULL) {
-			pos = kmalloc(sizeof(struct libname_node), GFP_KERNEL);
-			pos->name = kstrdup(curr, GFP_KERNEL);
+			pos = kmalloc(sizeof(struct libname_node), GFP_ATOMIC);
+			pos->name = kstrdup(curr, GFP_ATOMIC);
 			list_add_tail(&pos->list, &__sched_lib_name_list);
 		}
 		spin_unlock(&__sched_lib_name_lock);
@@ -5172,12 +5172,8 @@ SYSCALL_DEFINE0(sched_yield)
 	schedstat_inc(rq->yld_count);
 	current->sched_class->yield_task(rq);
 
-	/*
-	 * Since we are going to call schedule() anyway, there's
-	 * no need to preempt or enable interrupts:
-	 */
 	preempt_disable();
-	rq_unlock(rq, &rf);
+	rq_unlock_irq(rq, &rf);
 	sched_preempt_enable_no_resched();
 
 	schedule();
