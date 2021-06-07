@@ -332,6 +332,7 @@ static int qg_store_soc_params(struct qpnp_qg *chip)
 {
 	int rc, batt_temp = 0, i;
 	unsigned long rtc_sec = 0;
+	u32 flash_ocv = 0;
 
 	rc = get_rtc_time(&rtc_sec);
 	if (rc < 0)
@@ -350,6 +351,12 @@ static int qg_store_soc_params(struct qpnp_qg *chip)
 		qg_dbg(chip, QG_DEBUG_STATUS, "SDAM write param %d value=%d\n",
 					i, chip->sdam_data[i]);
 	}
+
+	/* store the SDAM OCV */
+	flash_ocv = chip->sdam_data[SDAM_OCV_UV] / 20000;
+	rc = qg_sdam_write(SDAM_FLASH_OCV, flash_ocv);
+	if (rc < 0)
+		pr_err("Failed to update flash-ocv rc=%d\n", rc);
 
 	return rc;
 }
@@ -1069,7 +1076,7 @@ static int qg_process_esr_data(struct qpnp_qg *chip)
 
 static int qg_esr_estimate(struct qpnp_qg *chip)
 {
-	int rc, i, ibat = 0;
+	int rc, i, ibat = 0, temp = 0;
 	u8 esr_done_count, reg0 = 0, reg1 = 0;
 	bool is_charging = false;
 
@@ -1094,6 +1101,17 @@ static int qg_esr_estimate(struct qpnp_qg *chip)
 	if (chip->charge_status != POWER_SUPPLY_STATUS_CHARGING &&
 			!chip->dt.esr_discharge_enable)
 		return 0;
+
+	/* Ignore ESR if battery-temp is below a threshold */
+	rc = qg_get_battery_temp(chip, &temp);
+	if (rc < 0)
+		return rc;
+	if (temp < chip->dt.esr_low_temp_threshold) {
+		qg_dbg(chip, QG_DEBUG_ESR,
+			"Battery temperature(%d) below threshold(%d) for ESR\n",
+				temp, chip->dt.esr_low_temp_threshold);
+		return 0;
+	}
 
 	if (chip->batt_soc != INT_MIN && (chip->batt_soc <
 					chip->dt.esr_disable_soc)) {
@@ -1244,22 +1262,23 @@ done:
 static int qg_trigger_good_ocv(struct qpnp_qg *chip)
 {
 	int rc = 0;
-	u32 ocv_uv = 0, ocv_raw = 0;
+	u32 vbat_uv = 0;
 	unsigned long rtc_sec = 0;
 
-	qg_dbg(chip, QG_DEBUG_STATUS, "QG FORCE GOOD_OCV triggered\n");
+	pr_info("Force to trigger QG GOOD_OCV\n");
 
 	mutex_lock(&chip->data_lock);
 
-	rc = qg_read_ocv(chip, &ocv_uv, &ocv_raw, S3_GOOD_OCV);
-	if (rc < 0) {
-		pr_err("Failed to read good_ocv, rc=%d\n", rc);
+	rc = qg_get_vbat_avg(chip, &vbat_uv);
+	if (rc != 0) {
+		pr_err("Failed to read vbat_avg for good_ocv trigger, rc=%d\n",
+		       rc);
 		goto done;
 	}
 
 	get_rtc_time(&rtc_sec);
 	chip->kdata.fifo_time = (u32)rtc_sec;
-	chip->kdata.param[QG_GOOD_OCV_UV].data = ocv_uv;
+	chip->kdata.param[QG_GOOD_OCV_UV].data = vbat_uv;
 	chip->kdata.param[QG_GOOD_OCV_UV].valid = true;
 
 	vote(chip->awake_votable, GOOD_OCV_VOTER, true, 0);
@@ -1288,9 +1307,8 @@ static void process_udata_work(struct work_struct *work)
 				chip->udata.param[QG_CC_SOC].data,
 				chip->cc_soc);
 		} else if (input_present && cc_soc_delta > MAX_CC_SOC_DELTA) {
-			pr_info("cc_soc %d exceeds SOC_FULL %d, reset qg\n",
-				chip->udata.param[QG_CC_SOC].data,
-				cc_soc_delta);
+			pr_info("cc_soc %d exceeds FULL, calibrate qg_soc\n",
+				chip->udata.param[QG_CC_SOC].data);
 			qg_trigger_good_ocv(chip);
 		} else {
 			chip->cc_soc = chip->udata.param[QG_CC_SOC].data;
@@ -1943,8 +1961,8 @@ static int qg_get_charge_counter(struct qpnp_qg *chip, int *charge_counter)
 		return rc;
 	}
 
-	cc_soc = CAP(0, 100, DIV_ROUND_CLOSEST(chip->cc_soc, 100));
-	*charge_counter = div_s64(temp * cc_soc, 100);
+	cc_soc = CAP(0, QG_SOC_FULL, chip->cc_soc);
+	*charge_counter = div_s64(temp * cc_soc, QG_SOC_FULL);
 
 	return 0;
 }
@@ -2413,6 +2431,9 @@ static int qg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_TIME_TO_FULL_AVG:
 		rc = ttf_get_time_to_full(chip->ttf, &pval->intval);
 		break;
+	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
+		rc = ttf_get_time_to_full(chip->ttf, &pval->intval);
+		break;
 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG:
 		rc = ttf_get_time_to_empty(chip->ttf, &pval->intval);
 		break;
@@ -2533,6 +2554,7 @@ static enum power_supply_property qg_psy_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
+	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
 	POWER_SUPPLY_PROP_ESR_ACTUAL,
 	POWER_SUPPLY_PROP_ESR_NOMINAL,
@@ -2681,13 +2703,15 @@ static int qg_parallel_status_update(struct qpnp_qg *chip)
 		"Parallel status changed Enabled=%d\n", parallel_enabled);
 
 	mutex_lock(&chip->data_lock);
-
 	/*
-	 * Parallel charger uses the same external sense, hence do not
-	 * enable SMB sensing if PMI632 is configured for external sense.
+	 * dt.qg_ext_sense = Uses external rsense, if defined do not
+	 *		     enable SMB sensing (for non-CP parallel charger).
+	 * dt.cp_iin_sns = Uses CP IIN_SNS, enable SMB sensing (for CP charger).
 	 */
-	if (!chip->dt.qg_ext_sense)
-		update_smb = true;
+	if (is_cp_available(chip))
+		update_smb = chip->dt.use_cp_iin_sns ? true : false;
+	else if (is_parallel_available(chip))
+		update_smb = chip->dt.qg_ext_sense ? false : true;
 
 	rc = process_rt_fifo_data(chip, update_smb);
 	if (rc < 0)
@@ -2939,7 +2963,8 @@ static int qg_notifier_cb(struct notifier_block *nb,
 		|| (strcmp(psy->desc->name, "sm7250_bms") == 0)
 		|| (strcmp(psy->desc->name, "parallel") == 0)
 		|| (strcmp(psy->desc->name, "usb") == 0)
-		|| (strcmp(psy->desc->name, "dc") == 0)) {
+		|| (strcmp(psy->desc->name, "dc") == 0)
+		|| (strcmp(psy->desc->name, "charge_pump_master") == 0)) {
 		/*
 		 * We cannot vote for awake votable here as that takes
 		 * a mutex lock and this is executed in an atomic context.
@@ -4401,7 +4426,7 @@ static int qg_parse_cl_dt(struct qpnp_qg *chip)
 #define DEFAULT_FVSS_FIFO_COUNT		1
 #define DEFAULT_FVSS_INTERVAL_MS	10000
 #define DEFAULT_TCSS_ENTRY_SOC		90
-
+#define DEFAULT_ESR_LOW_TEMP_THRESHOLD	100 /* 10 deg */
 static int qg_parse_dt(struct qpnp_qg *chip)
 {
 	int rc = 0;
@@ -4578,7 +4603,7 @@ static int qg_parse_dt(struct qpnp_qg *chip)
 	if (rc < 0)
 		chip->dt.rbat_conn_mohm = 0;
 	else
-		chip->dt.rbat_conn_mohm = temp;
+		chip->dt.rbat_conn_mohm = (int)temp;
 
 	/* esr */
 	chip->dt.esr_disable = of_property_read_bool(node,
@@ -4611,6 +4636,13 @@ static int qg_parse_dt(struct qpnp_qg *chip)
 	else
 		chip->dt.esr_min_ibat_ua = (int)temp;
 
+	rc = of_property_read_u32(node, "qcom,esr-low-temp-threshold", &temp);
+	if (rc < 0)
+		chip->dt.esr_low_temp_threshold =
+					DEFAULT_ESR_LOW_TEMP_THRESHOLD;
+	else
+		chip->dt.esr_low_temp_threshold = (int)temp;
+
 	rc = of_property_read_u32(node, "qcom,shutdown_soc_threshold", &temp);
 	if (rc < 0)
 		chip->dt.shutdown_soc_threshold = -EINVAL;
@@ -4624,6 +4656,9 @@ static int qg_parse_dt(struct qpnp_qg *chip)
 		chip->dt.sys_min_volt_mv = temp;
 
 	chip->dt.qg_ext_sense = of_property_read_bool(node, "qcom,qg-ext-sns");
+
+	chip->dt.use_cp_iin_sns = of_property_read_bool(node,
+							"qcom,use-cp-iin-sns");
 
 	chip->dt.use_s7_ocv = of_property_read_bool(node, "qcom,qg-use-s7-ocv");
 

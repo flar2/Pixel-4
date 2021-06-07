@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
+ * Copyright (C) 2020 Google, Inc
  * Copyright (C) 2020 Palmer Dabbelt <palmerdabbelt@google.com>
  */
 
@@ -129,7 +130,7 @@ struct target {
 	 * means no new messages will appear.  The destroyed flag triggers a
 	 * wakeup, which will end up removing the reference.
 	 */
-	long references;
+	struct kref references;
 	int dm_destroyed;
 };
 
@@ -506,11 +507,11 @@ static struct message *msg_get_to_user(struct target *t)
 static struct message *msg_get_from_user(struct channel *c, u64 seq)
 {
 	struct message *m;
-	struct list_head *cur;
+	struct list_head *cur, *tmp;
 
 	lockdep_assert_held(&c->lock);
 
-	list_for_each (cur, &c->from_user) {
+	list_for_each_safe (cur, tmp, &c->from_user) {
 		m = list_entry(cur, struct message, from_user);
 		if (m->msg.seq == seq) {
 			list_del(&m->from_user);
@@ -521,7 +522,7 @@ static struct message *msg_get_from_user(struct channel *c, u64 seq)
 	return NULL;
 }
 
-void message_kill(struct message *m, mempool_t *pool)
+static void message_kill(struct message *m, mempool_t *pool)
 {
 	m->bio->bi_status = BLK_STS_IOERR;
 	bio_endio(m->bio);
@@ -535,34 +536,22 @@ void message_kill(struct message *m, mempool_t *pool)
  * When called without the lock it may spuriously indicate there is remaining
  * work, but when called with the lock it must be accurate.
  */
-int target_poll(struct target *t)
+static int target_poll(struct target *t)
 {
 	return !list_empty(&t->to_user) || t->dm_destroyed;
 }
 
-void target_put(struct target *t)
+static void target_release(struct kref *ref)
 {
-	struct list_head *cur;
-
-	/*
-	 * This both releases a reference to the target and the lock.  We leave
-	 * it up to the caller to hold the lock, as they probably needed it for
-	 * something else.
-	 */
-	lockdep_assert_held(&t->lock);
-
-	t->references--;
-	if (t->references > 0) {
-		mutex_unlock(&t->lock);
-		return;
-	}
+	struct target *t = container_of(ref, struct target, references);
+	struct list_head *cur, *tmp;
 
 	/*
 	 * There may be outstanding BIOs that have not yet been given to
 	 * userspace.  At this point there's nothing we can do about them, as
 	 * there are and will never be any channels.
 	 */
-	list_for_each (cur, &t->to_user) {
+	list_for_each_safe (cur, tmp, &t->to_user) {
 		message_kill(list_entry(cur, struct message, to_user),
 			     &t->message_pool);
 	}
@@ -573,7 +562,20 @@ void target_put(struct target *t)
 	kfree(t);
 }
 
-struct channel *channel_alloc(struct target *t)
+static void target_put(struct target *t)
+{
+	/*
+	 * This both releases a reference to the target and the lock.  We leave
+	 * it up to the caller to hold the lock, as they probably needed it for
+	 * something else.
+	 */
+	lockdep_assert_held(&t->lock);
+
+	if (!kref_put(&t->references, target_release))
+		mutex_unlock(&t->lock);
+}
+
+static struct channel *channel_alloc(struct target *t)
 {
 	struct channel *c;
 
@@ -583,7 +585,7 @@ struct channel *channel_alloc(struct target *t)
 	if (c == NULL)
 		return NULL;
 
-	t->references++;
+	kref_get(&t->references);
 	c->target = t;
 	c->cur_from_user = &c->scratch_message_from_user;
 	mutex_init(&c->lock);
@@ -591,9 +593,9 @@ struct channel *channel_alloc(struct target *t)
 	return c;
 }
 
-void channel_free(struct channel *c)
+static void channel_free(struct channel *c)
 {
-	struct list_head *cur;
+	struct list_head *cur, *tmp;
 
 	lockdep_assert_held(&c->lock);
 
@@ -614,7 +616,7 @@ void channel_free(struct channel *c)
 		message_kill(c->cur_to_user, &c->target->message_pool);
 	if (c->cur_from_user != &c->scratch_message_from_user)
 		message_kill(c->cur_from_user, &c->target->message_pool);
-	list_for_each (cur, &c->from_user)
+	list_for_each_safe (cur, tmp, &c->from_user)
 		message_kill(list_entry(cur, struct message, from_user),
 			     &c->target->message_pool);
 
@@ -648,7 +650,7 @@ static int dev_open(struct inode *inode, struct file *file)
 
 	if (c == NULL) {
 		mutex_unlock(&t->lock);
-		return -ENOSPC;
+		return -ENOMEM;
 	}
 
 	mutex_unlock(&t->lock);
@@ -748,13 +750,6 @@ static ssize_t dev_read(struct kiocb *iocb, struct iov_iter *to)
 cleanup_unlock:
 	mutex_unlock(&c->lock);
 	return total_processed;
-}
-
-static ssize_t dev_splice_read(struct file *in, loff_t *ppos,
-			       struct pipe_inode_info *pipe, size_t len,
-			       unsigned int flags)
-{
-	return -EOPNOTSUPP;
 }
 
 static ssize_t dev_write(struct kiocb *iocb, struct iov_iter *from)
@@ -870,17 +865,6 @@ cleanup_unlock:
 	return total_processed;
 }
 
-static ssize_t dev_splice_write(struct pipe_inode_info *pipe, struct file *out,
-				loff_t *ppos, size_t len, unsigned int flags)
-{
-	return -EOPNOTSUPP;
-}
-
-static __poll_t dev_poll(struct file *file, poll_table *wait)
-{
-	return -EOPNOTSUPP;
-}
-
 static int dev_release(struct inode *inode, struct file *file)
 {
 	struct channel *c;
@@ -892,28 +876,13 @@ static int dev_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static int dev_fasync(int fd, struct file *file, int on)
-{
-	return -EOPNOTSUPP;
-}
-
-static long dev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-	return -EOPNOTSUPP;
-}
-
 static const struct file_operations file_operations = {
 	.owner = THIS_MODULE,
 	.open = dev_open,
 	.llseek = no_llseek,
 	.read_iter = dev_read,
-	.splice_read = dev_splice_read,
 	.write_iter = dev_write,
-	.splice_write = dev_splice_write,
-	.poll = dev_poll,
 	.release = dev_release,
-	.fasync = dev_fasync,
-	.unlocked_ioctl = dev_ioctl,
 };
 
 static int user_ctr(struct dm_target *ti, unsigned int argc, char **argv)
@@ -929,7 +898,7 @@ static int user_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	t = kzalloc(sizeof(*t), GFP_KERNEL);
 	if (t == NULL) {
-		r = -ENOSPC;
+		r = -ENOMEM;
 		goto cleanup_none;
 	}
 	ti->private = t;
@@ -946,7 +915,8 @@ static int user_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	 * until after the miscdev has been unregistered and all extant
 	 * channels have been closed.
 	 */
-	t->references = 1;
+	kref_init(&t->references);
+	kref_get(&t->references);
 
 	mutex_init(&t->lock);
 	init_waitqueue_head(&t->wq);
@@ -958,7 +928,7 @@ static int user_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	t->miscdev.fops = &file_operations;
 	t->miscdev.name = kasprintf(GFP_KERNEL, "dm-user/%s", argv[2]);
 	if (t->miscdev.name == NULL) {
-		r = -ENOSPC;
+		r = -ENOMEM;
 		goto cleanup_message_pool;
 	}
 
@@ -982,7 +952,7 @@ static int user_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (r) {
 		DMERR("Unable to register miscdev %s for dm-user",
 		      t->miscdev.name);
-		r = -ENOSPC;
+		r = -ENOMEM;
 		goto cleanup_misc_name;
 	}
 

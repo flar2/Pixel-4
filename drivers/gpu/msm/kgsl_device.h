@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2002,2007-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2002,2007-2020, The Linux Foundation. All rights reserved.
  */
 #ifndef __KGSL_DEVICE_H
 #define __KGSL_DEVICE_H
@@ -419,13 +419,13 @@ struct kgsl_context {
 #define pr_context(_d, _c, fmt, args...) \
 		dev_err((_d)->dev, "%s[%d]: " fmt, \
 		_context_comm((_c)), \
-		(_c)->proc_priv->pid, ##args)
+		pid_nr((_c)->proc_priv->pid), ##args)
 
 /**
  * struct kgsl_process_private -  Private structure for a KGSL process (across
  * all devices)
  * @priv: Internal flags, use KGSL_PROCESS_* values
- * @pid: ID for the task owner of the process
+ * @pid: Identification structure for the task owner of the process
  * @comm: task name of the process
  * @mem_lock: Spinlock to protect the process memory lists
  * @refcount: kref object for reference counting the process
@@ -443,7 +443,7 @@ struct kgsl_context {
  */
 struct kgsl_process_private {
 	unsigned long priv;
-	pid_t pid;
+	struct pid *pid;
 	char comm[TASK_COMM_LEN];
 	spinlock_t mem_lock;
 	struct kref refcount;
@@ -462,6 +462,26 @@ struct kgsl_process_private {
 	int fd_count;
 	atomic_t ctxt_count;
 	spinlock_t ctxt_count_lock;
+	/**
+	 * @state: state consisting KGSL_PROC_STATE and KGSL_PROC_PINNED_STATE
+	 */
+	unsigned long state;
+	/**
+	 * @reclaimed_page_cout: The number of pages reclaimed from this process
+	 */
+	atomic_t reclaimed_page_count;
+	/**
+	 * @fg_work: Work struct to schedule foreground work
+	 */
+	struct work_struct fg_work;
+	/**
+	 * @reclaim_lock: Mutex lock to protect KGSL_PROC_PINNED_STATE
+	 */
+	struct mutex reclaim_lock;
+	/**
+	 * @cmd_count: The number of cmds that are active for the process
+	 */
+	atomic_t cmd_count;
 };
 
 /**
@@ -566,7 +586,7 @@ static inline void kgsl_process_sub_stats(struct kgsl_process_private *priv,
 	struct mm_struct *mm;
 
 	atomic_long_sub(size, &priv->stats[type].cur);
-	pid_struct = find_get_pid(priv->pid);
+	pid_struct = find_get_pid(pid_nr(priv->pid));
 	if (pid_struct) {
 		task = get_pid_task(pid_struct, PIDTYPE_PID);
 		if (task) {

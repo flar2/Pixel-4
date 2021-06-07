@@ -2185,7 +2185,7 @@ static bool batt_health_set_chg_deadline(struct batt_chg_health *chg_health,
 		if (chg_health->rest_state != CHG_HEALTH_DONE)
 			chg_health->rest_state = CHG_HEALTH_USER_DISABLED;
 
-		/* enabled from any previous state */
+	/* enabled from any previous state */
 	} else {
 		const time_t rest_deadline = get_boot_sec() + deadline_s;
 
@@ -2725,7 +2725,7 @@ static int batt_chg_logic(struct batt_drv *batt_drv)
 		__pm_stay_awake(batt_drv->poll_ws);
 		batt_drv->batt_fast_update_cnt = BATT_WORK_FAST_RETRY_CNT;
 		mod_delayed_work(system_wq, &batt_drv->batt_work,
-				 BATT_WORK_FAST_RETRY_MS);
+				 msecs_to_jiffies(BATT_WORK_FAST_RETRY_MS));
 
 		/* TODO: move earlier and include the change to the curve */
 		ssoc_change_state(&batt_drv->ssoc_state, 1);
@@ -4951,7 +4951,11 @@ static int gbatt_get_property(struct power_supply *psy,
 
 	/* health */
 	case POWER_SUPPLY_PROP_HEALTH:
-		if (batt_drv->batt_health != POWER_SUPPLY_HEALTH_UNKNOWN) {
+		if (batt_drv->batt_health == POWER_SUPPLY_HEALTH_OVERHEAT &&
+		    gbms_temp_defend_dry_run(false, false)) {
+			val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		} else if (batt_drv->batt_health !=
+			   POWER_SUPPLY_HEALTH_UNKNOWN) {
 			val->intval = batt_drv->batt_health;
 		} else if (!batt_drv->fg_psy) {
 			val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
@@ -5196,10 +5200,10 @@ static struct power_supply_desc gbatt_psy_desc = {
 
 static void google_battery_init_work(struct work_struct *work)
 {
-	struct power_supply *fg_psy;
 	struct batt_drv *batt_drv = container_of(work, struct batt_drv,
 						 init_work.work);
 	struct device_node *node = batt_drv->device->of_node;
+	struct power_supply *fg_psy = batt_drv->fg_psy;
 	int ret = 0;
 
 	batt_rl_reset(batt_drv);
@@ -5215,14 +5219,17 @@ static void google_battery_init_work(struct work_struct *work)
 	mutex_init(&batt_drv->stats_lock);
 	mutex_init(&batt_drv->cc_data.lock);
 
-	fg_psy = power_supply_get_by_name(batt_drv->fg_psy_name);
-	if (!fg_psy) {
-		pr_info("failed to get \"%s\" power supply, retrying...\n",
-			batt_drv->fg_psy_name);
-		goto retry_init_work;
-	}
+	if (!batt_drv->fg_psy) {
 
-	batt_drv->fg_psy = fg_psy;
+		fg_psy = power_supply_get_by_name(batt_drv->fg_psy_name);
+		if (!fg_psy) {
+			pr_info("failed to get \"%s\" power supply, retrying...\n",
+				batt_drv->fg_psy_name);
+			goto retry_init_work;
+		}
+
+		batt_drv->fg_psy = fg_psy;
+	}
 
 	if (!batt_drv->batt_present) {
 		ret = GPSY_GET_PROP(fg_psy, POWER_SUPPLY_PROP_PRESENT);
@@ -5533,30 +5540,32 @@ static int google_battery_probe(struct platform_device *pdev)
 static int google_battery_remove(struct platform_device *pdev)
 {
 	struct batt_drv *batt_drv = platform_get_drvdata(pdev);
+	struct batt_ttf_stats *ttf_stats;
 
-	if (batt_drv) {
-		struct batt_ttf_stats *ttf_stats = &batt_drv->ttf_stats;
+	if (!batt_drv)
+		return 0;
 
-		if (batt_drv->history)
-			gbms_storage_cleanup_device(batt_drv->history);
-		if (batt_drv->fg_psy)
-			power_supply_put(batt_drv->fg_psy);
+	ttf_stats = &batt_drv->ttf_stats;
 
-		gbms_free_chg_profile(&batt_drv->chg_profile);
+	if (batt_drv->ssoc_log)
+		logbuffer_unregister(batt_drv->ssoc_log);
+	if (ttf_stats->ttf_log)
+		logbuffer_unregister(ttf_stats->ttf_log);
+	if (batt_drv->tz_dev)
+		thermal_zone_of_sensor_unregister(batt_drv->device,
+				batt_drv->tz_dev);
+	if (batt_drv->history)
+		gbms_storage_cleanup_device(batt_drv->history);
 
-		wakeup_source_unregister(batt_drv->msc_ws);
-		wakeup_source_unregister(batt_drv->batt_ws);
-		wakeup_source_unregister(batt_drv->taper_ws);
-		wakeup_source_unregister(batt_drv->poll_ws);
+	if (batt_drv->fg_psy)
+		power_supply_put(batt_drv->fg_psy);
 
-		if (batt_drv->ssoc_log)
-			logbuffer_unregister(batt_drv->ssoc_log);
-		if (ttf_stats->ttf_log)
-			logbuffer_unregister(ttf_stats->ttf_log);
-		if (batt_drv->tz_dev)
-			thermal_zone_of_sensor_unregister(batt_drv->device,
-					batt_drv->tz_dev);
-	}
+	gbms_free_chg_profile(&batt_drv->chg_profile);
+
+	wakeup_source_unregister(batt_drv->msc_ws);
+	wakeup_source_unregister(batt_drv->batt_ws);
+	wakeup_source_unregister(batt_drv->taper_ws);
+	wakeup_source_unregister(batt_drv->poll_ws);
 
 	return 0;
 }
