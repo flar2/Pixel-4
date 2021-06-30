@@ -123,7 +123,7 @@ static QDF_STATUS __dp_rx_desc_nbuf_free(struct dp_soc *soc,
 			nbuf = rx_desc->nbuf;
 			if (!rx_desc->unmapped) {
 				dp_ipa_handle_rx_buf_smmu_mapping(soc, nbuf,
-								  false);
+							RX_BUFFER_SIZE, false);
 				qdf_nbuf_unmap_single(soc->osdev, nbuf,
 						      QDF_DMA_BIDIRECTIONAL);
 			}
@@ -221,7 +221,7 @@ void dp_rx_desc_nbuf_and_pool_free(struct dp_soc *soc, uint32_t pool_id,
 
 			if (!(rx_desc_pool->array[i].rx_desc.unmapped)) {
 				dp_ipa_handle_rx_buf_smmu_mapping(soc, nbuf,
-								  false);
+							RX_BUFFER_SIZE, false);
 
 				qdf_nbuf_unmap_single(soc->osdev, nbuf,
 						      QDF_DMA_FROM_DEVICE);
@@ -247,7 +247,7 @@ void dp_rx_desc_nbuf_free(struct dp_soc *soc,
 
 			if (!(rx_desc_pool->array[i].rx_desc.unmapped)) {
 				dp_ipa_handle_rx_buf_smmu_mapping(soc, nbuf,
-								  false);
+							RX_BUFFER_SIZE, false);
 
 				qdf_nbuf_unmap_single(soc->osdev, nbuf,
 						      QDF_DMA_FROM_DEVICE);
