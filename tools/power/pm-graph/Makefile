@@ -1,47 +1,36 @@
-# SPDX-License-Identifier: GPL-2.0
-PREFIX		?= /usr
-DESTDIR		?=
+# SPDX-License-Identifier: GPL-2.0-only
 
-all:
-	@echo "Nothing to build"
+# auto-detect subdirs
+ifeq ($(CONFIG_MSM_VIDC_V4L2:M=m), m)
+SUFFIX_MSM_VIDC_V4L2:=-gki
+else
+SUFFIX_MSM_VIDC_V4L2:=
+endif
 
-install : uninstall
-	install -d  $(DESTDIR)$(PREFIX)/lib/pm-graph
-	install sleepgraph.py $(DESTDIR)$(PREFIX)/lib/pm-graph
-	install bootgraph.py $(DESTDIR)$(PREFIX)/lib/pm-graph
-	install -d  $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/cgskip.txt $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/freeze-callgraph.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/freeze.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/freeze-dev.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/standby-callgraph.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/standby.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/standby-dev.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/suspend-callgraph.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/suspend.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/suspend-dev.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
-	install -m 644 config/suspend-x2-proc.cfg $(DESTDIR)$(PREFIX)/lib/pm-graph/config
+ifeq ($(CONFIG_ARCH_KONA), y)
+include $(srctree)/techpack/video/config/konavid$(SUFFIX_MSM_VIDC_V4L2).conf
+endif
 
-	install -d  $(DESTDIR)$(PREFIX)/bin
-	ln -s $(DESTDIR)$(PREFIX)/lib/pm-graph/bootgraph.py $(DESTDIR)$(PREFIX)/bin/bootgraph
-	ln -s $(DESTDIR)$(PREFIX)/lib/pm-graph/sleepgraph.py $(DESTDIR)$(PREFIX)/bin/sleepgraph
+ifeq ($(CONFIG_ARCH_KONA), y)
+LINUXINCLUDE    += -include $(srctree)/techpack/video/config/konavidconf$(SUFFIX_MSM_VIDC_V4L2).h
+endif
 
-	install -d  $(DESTDIR)$(PREFIX)/share/man/man8
-	install bootgraph.8 $(DESTDIR)$(PREFIX)/share/man/man8
-	install sleepgraph.8 $(DESTDIR)$(PREFIX)/share/man/man8
+# auto-detect subdirs
+ifeq ($(CONFIG_ARCH_LITO), y)
+include $(srctree)/techpack/video/config/litovid$(SUFFIX_MSM_VIDC_V4L2).conf
+endif
 
-uninstall :
-	rm -f $(DESTDIR)$(PREFIX)/share/man/man8/bootgraph.8
-	rm -f $(DESTDIR)$(PREFIX)/share/man/man8/sleepgraph.8
+ifeq ($(CONFIG_ARCH_LITO), y)
+LINUXINCLUDE    += -include $(srctree)/techpack/video/config/litovidconf$(SUFFIX_MSM_VIDC_V4L2).h
+endif
 
-	rm -f $(DESTDIR)$(PREFIX)/bin/bootgraph
-	rm -f $(DESTDIR)$(PREFIX)/bin/sleepgraph
+# auto-detect subdirs
+ifeq ($(CONFIG_ARCH_BENGAL), y)
+include $(srctree)/techpack/video/config/bengalvid.conf
+endif
 
-	rm -f $(DESTDIR)$(PREFIX)/lib/pm-graph/config/*
-	if [ -d $(DESTDIR)$(PREFIX)/lib/pm-graph/config ] ; then \
-		rmdir $(DESTDIR)$(PREFIX)/lib/pm-graph/config; \
-	fi;
-	rm -f $(DESTDIR)$(PREFIX)/lib/pm-graph/*
-	if [ -d $(DESTDIR)$(PREFIX)/lib/pm-graph ] ; then \
-		rmdir $(DESTDIR)$(PREFIX)/lib/pm-graph; \
-	fi;
+ifeq ($(CONFIG_ARCH_BENGAL), y)
+LINUXINCLUDE    += -include $(srctree)/techpack/video/config/bengalvidconf.h
+endif
+
+obj-y +=msm/
