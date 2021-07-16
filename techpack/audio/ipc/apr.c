@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2014, 2016-2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2014, 2016-2020 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -427,10 +427,6 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	} else {
 		pr_err_ratelimited("%s: Write APR pkt failed with error %d\n",
 			__func__, rc);
-		if (rc == -EBUSY) {
-			/* b/163101967: to collect full ramdump for debugging */
-			panic("Crashing the device, as ADSP subsystem is busy");
-		}
 		if (rc == -ECONNRESET) {
 			pr_err_ratelimited("%s: Received reset error from tal\n",
 					__func__);
@@ -1128,9 +1124,9 @@ static int __init apr_debug_init(void)
 }
 #else
 static int __init apr_debug_init(void)
-(
+{
 	return 0;
-)
+}
 #endif
 
 static void apr_cleanup(void)
@@ -1151,7 +1147,9 @@ static void apr_cleanup(void)
 				mutex_destroy(&client[i][j].svc[k].m_lock);
 		}
 	}
+#ifdef CONFIG_DEBUG_FS
 	debugfs_remove(debugfs_apr_debug);
+#endif
 }
 
 static int apr_probe(struct platform_device *pdev)
