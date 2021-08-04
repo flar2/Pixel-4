@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _DSI_DISPLAY_H_
@@ -106,13 +106,15 @@ struct dsi_display_boot_param {
  * struct dsi_display_clk_info - dsi display clock source information
  * @src_clks:          Source clocks for DSI display.
  * @mux_clks:          Mux clocks used for DFPS.
- * @shadow_clks:       Used for DFPS.
+ * @shadow_clks:       Used for D-phy clock switch.
+ * @shadow_cphy_clks:  Used for C-phy clock switch.
  */
 struct dsi_display_clk_info {
 	struct dsi_clk_link_set src_clks;
 	struct dsi_clk_link_set mux_clks;
 	struct dsi_clk_link_set cphy_clks;
 	struct dsi_clk_link_set shadow_clks;
+	struct dsi_clk_link_set shadow_cphy_clks;
 };
 
 /**
@@ -434,6 +436,16 @@ void dsi_display_put_mode(struct dsi_display *display,
  * Return: error code.
  */
 int dsi_display_get_default_lms(void *dsi_display, u32 *num_lm);
+
+/**
+ * dsi_display_get_qsync_min_fps() - get qsync min fps for given fps
+ * @display:            Handle to display.
+ * @mode_fps:           Fps value of current mode
+ *
+ * Return: error code.
+ */
+int dsi_display_get_qsync_min_fps(void *dsi_display, u32 mode_fps);
+
 
 /**
  * dsi_display_find_mode() - retrieve cached DSI mode given relevant params
