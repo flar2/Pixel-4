@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -45,7 +45,7 @@ blm_update_ap_info(struct blm_reject_ap *blm_entry, struct blm_config *cfg,
 		entry_add_time =
 			blm_entry->ap_timestamp.userspace_avoid_timestamp;
 
-		if ((cur_timestamp - entry_add_time) >
+		if ((cur_timestamp - entry_add_time) >=
 		     MINUTES_TO_MS(cfg->avoid_list_exipry_time)) {
 			/* Move AP to monitor list as avoid list time is over */
 			blm_entry->userspace_avoidlist = false;
@@ -61,7 +61,7 @@ blm_update_ap_info(struct blm_reject_ap *blm_entry, struct blm_config *cfg,
 	if (BLM_IS_AP_AVOIDED_BY_DRIVER(blm_entry)) {
 		entry_add_time = blm_entry->ap_timestamp.driver_avoid_timestamp;
 
-		if ((cur_timestamp - entry_add_time) >
+		if ((cur_timestamp - entry_add_time) >=
 		     MINUTES_TO_MS(cfg->avoid_list_exipry_time)) {
 			/* Move AP to monitor list as avoid list time is over */
 			blm_entry->driver_avoidlist = false;
@@ -78,7 +78,7 @@ blm_update_ap_info(struct blm_reject_ap *blm_entry, struct blm_config *cfg,
 		entry_add_time =
 			blm_entry->ap_timestamp.driver_blacklist_timestamp;
 
-		if ((cur_timestamp - entry_add_time) >
+		if ((cur_timestamp - entry_add_time) >=
 		     MINUTES_TO_MS(cfg->black_list_exipry_time)) {
 			/* Move AP to monitor list as black list time is over */
 			blm_entry->driver_blacklist = false;
@@ -96,8 +96,8 @@ blm_update_ap_info(struct blm_reject_ap *blm_entry, struct blm_config *cfg,
 			    blm_entry->ap_timestamp.rssi_reject_timestamp;
 
 		if ((blm_entry->rssi_reject_params.retry_delay &&
-		     entry_age > blm_entry->rssi_reject_params.retry_delay) ||
-		    (scan_entry && (scan_entry->rssi_raw > blm_entry->
+		     entry_age >= blm_entry->rssi_reject_params.retry_delay) ||
+		    (scan_entry && (scan_entry->rssi_raw >= blm_entry->
 					   rssi_reject_params.expected_rssi))) {
 			/*
 			 * Remove from the rssi reject list as:-
@@ -132,6 +132,8 @@ blm_update_ap_info(struct blm_reject_ap *blm_entry, struct blm_config *cfg,
 		  blm_entry->reject_ap_type);
 }
 
+#define MAX_BL_TIME 255000
+
 static enum blm_bssid_action
 blm_prune_old_entries_and_get_action(struct blm_reject_ap *blm_entry,
 				     struct blm_config *cfg,
@@ -152,6 +154,15 @@ blm_prune_old_entries_and_get_action(struct blm_reject_ap *blm_entry,
 		return BLM_ACTION_NOP;
 	}
 
+	if (BLM_IS_AP_IN_RSSI_REJECT_LIST(blm_entry) &&
+	    blm_entry->rssi_reject_params.retry_delay > MAX_BL_TIME) {
+		blm_info("Allow BSSID %pM as the retry delay is greater than %d ms, expected RSSI = %d, current RSSI = %d, retry delay = %d ms",
+			 blm_entry->bssid.bytes, MAX_BL_TIME,
+			 blm_entry->rssi_reject_params.expected_rssi,
+			 entry ? entry->rssi_raw : 0,
+			 blm_entry->rssi_reject_params.retry_delay);
+		return BLM_ACTION_NOP;
+	}
 	if (BLM_IS_AP_IN_BLACKLIST(blm_entry))
 		return BLM_REMOVE_FROM_LIST;
 
@@ -453,16 +464,16 @@ blm_get_delta_of_bssid(enum blm_reject_ap_type list_type,
 	 * de-blacklisting the AP from rssi reject list.
 	 */
 	case DRIVER_RSSI_REJECT_TYPE:
-		if (blm_entry->rssi_reject_params.retry_delay) {
-			return blm_entry->rssi_reject_params.retry_delay -
+		if (blm_entry->rssi_reject_params.retry_delay)
+			disallowed_time =
+				blm_entry->rssi_reject_params.retry_delay -
 				(cur_timestamp -
-				 blm_entry->ap_timestamp.rssi_reject_timestamp);
-		} else {
+				blm_entry->ap_timestamp.rssi_reject_timestamp);
+		else
 			disallowed_time = (int32_t)(MINUTES_TO_MS(RSSI_TIMEOUT_VALUE) -
 				(cur_timestamp -
 				 blm_entry->ap_timestamp.rssi_reject_timestamp));
-			return ((disallowed_time < 0) ? 0 : disallowed_time);
-		}
+		return ((disallowed_time < 0) ? 0 : disallowed_time);
 	case DRIVER_MONITOR_TYPE:
 		return cur_timestamp -
 			       blm_entry->ap_timestamp.driver_monitor_timestamp;
@@ -606,6 +617,121 @@ blm_remove_lowest_delta_entry(qdf_list_t *reject_ap_list,
 	return QDF_STATUS_E_FAILURE;
 }
 
+/**
+ * blm_find_reject_type_string() - Function to convert int to string
+ * @reject_ap_type:   blm_reject_ap_type
+ *
+ * This function is used to convert int value of enum blm_reject_ap_type
+ * to string format.
+ *
+ * Return: String
+ *
+ */
+static const char *
+blm_find_reject_type_string(enum blm_reject_ap_type reject_ap_type)
+{
+	switch (reject_ap_type) {
+	CASE_RETURN_STRING(USERSPACE_AVOID_TYPE);
+	CASE_RETURN_STRING(USERSPACE_BLACKLIST_TYPE);
+	CASE_RETURN_STRING(DRIVER_AVOID_TYPE);
+	CASE_RETURN_STRING(DRIVER_BLACKLIST_TYPE);
+	CASE_RETURN_STRING(DRIVER_RSSI_REJECT_TYPE);
+	CASE_RETURN_STRING(DRIVER_MONITOR_TYPE);
+	default:
+		return "REJECT_REASON_UNKNOWN";
+	}
+}
+
+/**
+ * blm_get_reject_ap_type() - Function to find reject ap type
+ * @blm_entry:   blm_reject_ap
+ *
+ * This function is used to get reject ap type.
+ *
+ * Return: blm_reject_ap_type
+ *
+ */
+static enum blm_reject_ap_type
+blm_get_reject_ap_type(struct blm_reject_ap *blm_entry)
+{
+	if (BLM_IS_AP_AVOIDED_BY_USERSPACE(blm_entry))
+		return USERSPACE_AVOID_TYPE;
+	if (BLM_IS_AP_BLACKLISTED_BY_USERSPACE(blm_entry))
+		return USERSPACE_BLACKLIST_TYPE;
+	if (BLM_IS_AP_AVOIDED_BY_DRIVER(blm_entry))
+		return DRIVER_AVOID_TYPE;
+	if (BLM_IS_AP_BLACKLISTED_BY_DRIVER(blm_entry))
+		return DRIVER_BLACKLIST_TYPE;
+	if (BLM_IS_AP_IN_RSSI_REJECT_LIST(blm_entry))
+		return DRIVER_RSSI_REJECT_TYPE;
+	if (BLM_IS_AP_IN_MONITOR_LIST(blm_entry))
+		return DRIVER_MONITOR_TYPE;
+
+	return REJECT_REASON_UNKNOWN;
+}
+
+/**
+ * blm_dump_blacklist_bssid() - Function to dump blacklisted bssid
+ * @pdev:  pdev object
+ *
+ * This function is used to dump blacklisted bssid along with reject
+ * ap type, source, delay and required rssi
+ *
+ * Return: None
+ *
+ */
+void blm_dump_blacklist_bssid(struct wlan_objmgr_pdev *pdev)
+{
+	struct blm_reject_ap *blm_entry = NULL;
+	qdf_list_node_t *cur_node = NULL, *next_node = NULL;
+	struct blm_pdev_priv_obj *blm_ctx;
+	struct blm_psoc_priv_obj *blm_psoc_obj;
+	uint32_t reject_duration;
+	enum blm_reject_ap_type reject_ap_type;
+	qdf_list_t *reject_db_list;
+	QDF_STATUS status;
+
+	blm_ctx = blm_get_pdev_obj(pdev);
+	blm_psoc_obj = blm_get_psoc_obj(wlan_pdev_get_psoc(pdev));
+
+	if (!blm_ctx || !blm_psoc_obj) {
+		blm_err("blm_ctx or blm_psoc_obj is NULL");
+		return;
+	}
+
+	status = qdf_mutex_acquire(&blm_ctx->reject_ap_list_lock);
+	if (QDF_IS_STATUS_ERROR(status)) {
+		blm_err("failed to acquire reject_ap_list_lock");
+		return;
+	}
+
+	reject_db_list = &blm_ctx->reject_ap_list;
+	qdf_list_peek_front(reject_db_list, &cur_node);
+	while (cur_node) {
+		qdf_list_peek_next(reject_db_list, cur_node, &next_node);
+
+		blm_entry = qdf_container_of(cur_node, struct blm_reject_ap,
+					     node);
+
+		reject_ap_type = blm_get_reject_ap_type(blm_entry);
+
+		reject_duration = blm_get_delta_of_bssid(
+						reject_ap_type, blm_entry,
+						&blm_psoc_obj->blm_cfg);
+
+			blm_nofl_debug("BLACKLIST BSSID %pM type %s retry delay %dms expected RSSI %d",
+				blm_entry->bssid.bytes,
+				blm_find_reject_type_string(reject_ap_type),
+				reject_duration,
+				blm_entry->rssi_reject_params.expected_rssi);
+
+		cur_node = next_node;
+		next_node = NULL;
+	}
+
+	qdf_mutex_release(&blm_ctx->reject_ap_list_lock);
+}
+
 static void blm_fill_reject_list(qdf_list_t *reject_db_list,
 				 struct reject_ap_config_params *reject_list,
 				 uint8_t *num_of_reject_bssid,
@@ -650,8 +776,10 @@ static void blm_fill_reject_list(qdf_list_t *reject_db_list,
 			reject_list[*num_of_reject_bssid].bssid =
 							blm_entry->bssid;
 			(*num_of_reject_bssid)++;
-			blm_debug("Adding BSSID %pM of type %d to reject ap list, total entries added yet = %d",
+			blm_debug("Adding BSSID %pM of type %d retry delay %d expected RSSI %d, entries added = %d",
 				  blm_entry->bssid.bytes, reject_ap_type,
+				  reject_list[*num_of_reject_bssid -1].reject_duration,
+				  blm_entry->rssi_reject_params.expected_rssi,
 				  *num_of_reject_bssid);
 		}
 		cur_node = next_node;

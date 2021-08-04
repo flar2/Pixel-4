@@ -163,6 +163,9 @@ QDF_STATUS wma_update_channel_list(WMA_HANDLE handle,
 			chan_p->dfs_set = 1;
 		}
 
+		if (chan_list->chanParam[i].nan_disabled)
+			chan_p->nan_disabled = 1;
+
 		if (chan_p->mhz < WMA_2_4_GHZ_MAX_FREQ) {
 			chan_p->phy_mode = MODE_11G;
 			if (chan_list->vht_en && chan_list->vht_24_en)
@@ -1309,6 +1312,8 @@ static QDF_STATUS wma_roam_scan_offload_ap_profile(tp_wma_handle wma_handle,
 			roam_req->min_rssi_params[DEAUTH_MIN_RSSI];
 	ap_profile.min_rssi_params[BMISS_MIN_RSSI] =
 			roam_req->min_rssi_params[BMISS_MIN_RSSI];
+	ap_profile.min_rssi_params[MIN_RSSI_2G_TO_5G_ROAM] =
+			roam_req->min_rssi_params[MIN_RSSI_2G_TO_5G_ROAM];
 
 	ap_profile.score_delta_param[IDLE_ROAM_TRIGGER] =
 				roam_req->score_delta_param[IDLE_ROAM_TRIGGER];

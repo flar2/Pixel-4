@@ -2689,19 +2689,17 @@ static int __wlan_hdd_cfg80211_do_acs(struct wiphy *wiphy,
 	struct hdd_context *hdd_ctx = wiphy_priv(wiphy);
 	struct sap_config *sap_config;
 	struct sk_buff *temp_skbuff;
-	int ret, i, ch_cnt = 0;
+	int ret, i;
 	struct nlattr *tb[QCA_WLAN_VENDOR_ATTR_ACS_MAX + 1];
 	bool ht_enabled, ht40_enabled, vht_enabled;
 	uint8_t ch_width;
 	enum qca_wlan_vendor_acs_hw_mode hw_mode;
 	enum policy_mgr_con_mode pm_mode;
 	QDF_STATUS qdf_status;
-	bool skip_etsi13_srd_chan = false;
 	bool is_vendor_acs_support = false;
 	bool is_external_acs_policy = false;
 	bool sap_force_11n_for_11ac = 0;
 	bool go_force_11n_for_11ac = 0;
-	bool etsi13_srd_chan;
 	bool go_11ac_override = 0;
 	bool sap_11ac_override = 0;
 	uint8_t conc_channel;
@@ -2895,25 +2893,7 @@ static int __wlan_hdd_cfg80211_do_acs(struct wiphy *wiphy,
 		goto out;
 	}
 
-	ucfg_mlme_get_etsi13_srd_chan_in_master_mode(hdd_ctx->psoc,
-						     &etsi13_srd_chan);
-	skip_etsi13_srd_chan =
-		!etsi13_srd_chan &&
-		wlan_reg_is_etsi13_regdmn(hdd_ctx->pdev);
-
-	if (skip_etsi13_srd_chan) {
-		for (i = 0; i < sap_config->acs_cfg.ch_list_count; i++) {
-			if (wlan_reg_is_etsi13_srd_chan(hdd_ctx->pdev,
-							sap_config->acs_cfg.
-							ch_list[i]))
-				sap_config->acs_cfg.ch_list[i] = 0;
-			else
-				sap_config->acs_cfg.ch_list[ch_cnt++] =
-						sap_config->acs_cfg.ch_list[i];
-		}
-		sap_config->acs_cfg.ch_list_count = ch_cnt;
-	}
-
+	sap_dump_acs_channel(&sap_config->acs_cfg);
 	hdd_avoid_acs_channels(hdd_ctx, sap_config);
 
 	pm_mode =
@@ -2939,33 +2919,6 @@ static int __wlan_hdd_cfg80211_do_acs(struct wiphy *wiphy,
 
 	conc_channel = policy_mgr_mode_specific_get_channel(hdd_ctx->psoc,
 							    PM_STA_MODE);
-	if (is_external_acs_policy && conc_channel) {
-		if ((conc_channel >= WLAN_REG_CH_NUM(CHAN_ENUM_36) &&
-		     sap_config->acs_cfg.band == QCA_ACS_MODE_IEEE80211A) ||
-		     (conc_channel <= WLAN_REG_CH_NUM(CHAN_ENUM_14) &&
-		      (sap_config->acs_cfg.band == QCA_ACS_MODE_IEEE80211B ||
-		       sap_config->acs_cfg.band == QCA_ACS_MODE_IEEE80211G))) {
-			sap_config->acs_cfg.pri_ch = conc_channel;
-			wlan_sap_set_sap_ctx_acs_cfg(
-				WLAN_HDD_GET_SAP_CTX_PTR(adapter), sap_config);
-			mac_handle = hdd_ctx->mac_handle;
-			sap_config_acs_result(mac_handle,
-					      WLAN_HDD_GET_SAP_CTX_PTR(adapter),
-					      sap_config->acs_cfg.ht_sec_ch);
-			sap_config->ch_params.ch_width =
-					sap_config->acs_cfg.ch_width;
-			sap_config->ch_params.sec_ch_offset =
-					sap_config->acs_cfg.ht_sec_ch;
-			sap_config->ch_params.center_freq_seg0 =
-					sap_config->acs_cfg.vht_seg0_center_ch;
-			sap_config->ch_params.center_freq_seg1 =
-					sap_config->acs_cfg.vht_seg1_center_ch;
-			/*notify hostapd about channel override */
-			wlan_hdd_cfg80211_acs_ch_select_evt(adapter);
-			ret = 0;
-			goto out;
-		}
-	}
 
 	if (is_external_acs_policy &&
 	    policy_mgr_is_force_scc(hdd_ctx->psoc) &&
@@ -3000,6 +2953,33 @@ static int __wlan_hdd_cfg80211_do_acs(struct wiphy *wiphy,
 		}
 	}
 
+	if (is_external_acs_policy && conc_channel &&
+	    !sap_config->acs_cfg.ch_list_count) {
+		if ((conc_channel <= WLAN_REG_CH_NUM(CHAN_ENUM_14) &&
+		      (sap_config->acs_cfg.band == QCA_ACS_MODE_IEEE80211B ||
+		       sap_config->acs_cfg.band == QCA_ACS_MODE_IEEE80211G ||
+		       sap_config->acs_cfg.band == QCA_ACS_MODE_IEEE80211ANY))) {
+			sap_config->acs_cfg.pri_ch = conc_channel;
+			wlan_sap_set_sap_ctx_acs_cfg(
+				WLAN_HDD_GET_SAP_CTX_PTR(adapter), sap_config);
+			mac_handle = hdd_ctx->mac_handle;
+			sap_config_acs_result(mac_handle,
+					      WLAN_HDD_GET_SAP_CTX_PTR(adapter),
+					      sap_config->acs_cfg.ht_sec_ch);
+			sap_config->ch_params.ch_width =
+					sap_config->acs_cfg.ch_width;
+			sap_config->ch_params.sec_ch_offset =
+					sap_config->acs_cfg.ht_sec_ch;
+			sap_config->ch_params.center_freq_seg0 =
+					sap_config->acs_cfg.vht_seg0_center_ch;
+			sap_config->ch_params.center_freq_seg1 =
+					sap_config->acs_cfg.vht_seg1_center_ch;
+			/*notify hostapd about channel override */
+			wlan_hdd_cfg80211_acs_ch_select_evt(adapter);
+			ret = 0;
+			goto out;
+		}
+	}
 	ret = wlan_hdd_set_acs_ch_range(sap_config, hw_mode,
 					   ht_enabled, vht_enabled);
 	if (ret) {
@@ -16518,6 +16498,10 @@ static int __wlan_hdd_cfg80211_add_key(struct wiphy *wiphy,
 
 	mac_handle = hdd_ctx->mac_handle;
 
+	cdp_peer_flush_frags(cds_get_context(QDF_MODULE_ID_SOC),
+			     cds_get_context(QDF_MODULE_ID_TXRX),
+			     adapter->vdev_id, set_key.peerMac.bytes);
+
 	switch (params->cipher) {
 	case WLAN_CIPHER_SUITE_WEP40:
 		set_key.encType = eCSR_ENCRYPT_TYPE_WEP40_STATICKEY;
@@ -19968,6 +19952,8 @@ static int __wlan_hdd_cfg80211_connect(struct wiphy *wiphy,
 		bssid = req->bssid;
 	else if (bssid_hint)
 		bssid = bssid_hint;
+
+	ucfg_blm_dump_black_list_ap(hdd_ctx->pdev);
 
 	if (bssid && hdd_get_adapter_by_macaddr(hdd_ctx, (uint8_t *)bssid)) {
 		hdd_err("adapter exist with same mac address " QDF_MAC_ADDR_STR,
