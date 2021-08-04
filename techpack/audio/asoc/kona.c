@@ -33,6 +33,8 @@
 #include "codecs/wsa881x.h"
 #include "codecs/wsa883x/wsa883x.h"
 #include "codecs/wcd938x/wcd938x.h"
+#include "codecs/wcd937x/wcd937x-mbhc.h"
+#include "codecs/wcd937x/wcd937x.h"
 #include "codecs/bolero/bolero-cdc.h"
 #include <dt-bindings/sound/audio-codec-port-types.h>
 #include "codecs/bolero/wsa-macro.h"
@@ -82,13 +84,17 @@
 
 #define ADSP_STATE_READY_TIMEOUT_MS 3000
 
-#define WSA8810_NAME_1 "wsa881x.20170211"
-#define WSA8810_NAME_2 "wsa881x.20170212"
+#define WSA8810_NAME_1 "wsa881x.1020170211"
+#define WSA8810_NAME_2 "wsa881x.1020170212"
+#define WSA8815_NAME_1 "wsa881x.1021170213"
+#define WSA8815_NAME_2 "wsa881x.1021170214"
 #define WCN_CDC_SLIM_RX_CH_MAX 2
 #define WCN_CDC_SLIM_TX_CH_MAX 2
 #define WCN_CDC_SLIM_TX_CH_MAX_LITO 3
 
 #define KONA_ENTRY_MAX_LEN 64
+
+#define SWR_MAX_SLAVE_DEVICES 6
 
 enum {
 	RX_PATH = 0,
@@ -110,6 +116,7 @@ enum {
 
 #define TDM_MAX_SLOTS 8
 #define TDM_SLOT_WIDTH_BITS 32
+#define TDM_SLOT_WIDTH_BYTES TDM_SLOT_WIDTH_BITS/8
 
 enum {
 	TDM_PRI = 0,
@@ -200,6 +207,10 @@ struct msm_asoc_mach_data {
 	struct clk *lpass_audio_hw_vote;
 	int core_audio_vote_count;
 	bool call_state;
+	u32 wsa_max_devs;
+	u32 tdm_max_slots; /* Max TDM slots used */
+	int (*get_wsa_dev_num)(struct snd_soc_component*);
+	struct afe_cps_hw_intf_cfg cps_config;
 };
 
 struct tdm_port {
@@ -660,7 +671,7 @@ static struct dev_config cdc_dma_rx_cfg[] = {
 
 /* Default configuration of Codec DMA Interface TX */
 static struct dev_config cdc_dma_tx_cfg[] = {
-	[WSA_CDC_DMA_TX_0] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
+	[WSA_CDC_DMA_TX_0] = {SAMPLING_RATE_8KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
 	[WSA_CDC_DMA_TX_1] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
 	[WSA_CDC_DMA_TX_2] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
 	[TX_CDC_DMA_TX_0] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
@@ -871,6 +882,23 @@ static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc85_dma_rx_2_sample_rate,
 static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc85_dma_rx_3_sample_rate,
 				cdc_dma_sample_rate_text);
 static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc85_dma_rx_5_sample_rate,
+				cdc_dma_sample_rate_text);
+
+/* WCD937x */
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_0_format, bit_format_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_1_format, bit_format_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_2_format, bit_format_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_3_format, bit_format_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_5_format, bit_format_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_0_sample_rate,
+				cdc_dma_sample_rate_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_1_sample_rate,
+				cdc_dma_sample_rate_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_2_sample_rate,
+				cdc_dma_sample_rate_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_3_sample_rate,
+				cdc_dma_sample_rate_text);
+static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc_dma_rx_5_sample_rate,
 				cdc_dma_sample_rate_text);
 
 static SOC_ENUM_SINGLE_EXT_DECL(ext_disp_rx_chs, ch_text);
@@ -1986,8 +2014,11 @@ static int tdm_slot_map_put(struct snd_kcontrol *kcontrol,
 	int interface = ucontrol->value.integer.value[0];
 	int channel = ucontrol->value.integer.value[1];
 	unsigned int offset_val = 0;
+	unsigned int max_slot_offset = 0;
 	unsigned int *slot_offset = NULL;
 	struct tdm_dev_config *config = NULL;
+	struct msm_asoc_mach_data *pdata = NULL;
+	struct snd_soc_component *component = NULL;
 
 	if (interface < 0  || interface >= (TDM_INTERFACE_MAX * MAX_PATH)) {
 		pr_err("%s: incorrect interface = %d\n", __func__, interface);
@@ -2001,15 +2032,28 @@ static int tdm_slot_map_put(struct snd_kcontrol *kcontrol,
 	pr_debug("%s: interface = %d, channel = %d\n", __func__,
 		interface, channel);
 
+	component = snd_soc_kcontrol_component(kcontrol);
+	pdata = snd_soc_card_get_drvdata(component->card);
 	config = ((struct tdm_dev_config *) tdm_cfg[interface / MAX_PATH]) +
 			((interface % MAX_PATH) * TDM_PORT_MAX) + channel;
-	slot_offset = config->tdm_slot_offset;
+	if (!config) {
+		pr_err("%s: tdm config is NULL\n", __func__);
+		return -EINVAL;
+	}
 
-	for (slot_index = 0; slot_index < TDM_MAX_SLOTS; slot_index++) {
+	slot_offset = config->tdm_slot_offset;
+	if (!slot_offset) {
+		pr_err("%s: slot offset is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	max_slot_offset = TDM_SLOT_WIDTH_BYTES * (pdata->tdm_max_slots - 1);
+
+	for (slot_index = 0; slot_index < pdata->tdm_max_slots; slot_index++) {
 		offset_val = ucontrol->value.integer.value[MAX_PATH +
 				slot_index];
-		/* Offset value can only be 0, 4, 8, ..28 */
-		if (offset_val % 4 == 0 && offset_val <= 28)
+		/* Offset value can only be 0, 4, 8, .. */
+		if (offset_val % 4 == 0 && offset_val <= max_slot_offset)
 			slot_offset[slot_index] = offset_val;
 		pr_debug("%s: slot offset[%d] = %d\n", __func__,
 			slot_index, slot_offset[slot_index]);
@@ -2667,6 +2711,12 @@ static int msm_get_port_id(int be_id)
 		break;
 	case MSM_BACKEND_DAI_SENARY_MI2S_TX:
 		afe_port_id = AFE_PORT_ID_SENARY_MI2S_TX;
+		break;
+	case MSM_BACKEND_DAI_WSA_CDC_DMA_RX_0:
+		afe_port_id = AFE_PORT_ID_WSA_CODEC_DMA_RX_0;
+		break;
+	case MSM_BACKEND_DAI_WSA_CDC_DMA_TX_0:
+		afe_port_id = AFE_PORT_ID_WSA_CODEC_DMA_TX_0;
 		break;
 	case MSM_BACKEND_DAI_VA_CDC_DMA_TX_0:
 		afe_port_id = AFE_PORT_ID_VA_CODEC_DMA_TX_0;
@@ -3701,6 +3751,39 @@ static const struct snd_kcontrol_new msm_int_wcd9385_snd_controls[] = {
 			cdc_dma_rx_sample_rate_put),
 };
 
+static const struct snd_kcontrol_new msm_int_wcd937x_snd_controls[] = {
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 Format", rx_cdc_dma_rx_0_format,
+			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_1 Format", rx_cdc_dma_rx_1_format,
+			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_2 Format", rx_cdc_dma_rx_2_format,
+			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_3 Format", rx_cdc_dma_rx_3_format,
+			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_5 Format", rx_cdc_dma_rx_5_format,
+			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 SampleRate",
+			rx_cdc_dma_rx_0_sample_rate,
+			cdc_dma_rx_sample_rate_get,
+			cdc_dma_rx_sample_rate_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_1 SampleRate",
+			rx_cdc_dma_rx_1_sample_rate,
+			cdc_dma_rx_sample_rate_get,
+			cdc_dma_rx_sample_rate_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_2 SampleRate",
+			rx_cdc_dma_rx_2_sample_rate,
+			cdc_dma_rx_sample_rate_get,
+			cdc_dma_rx_sample_rate_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_3 SampleRate",
+			rx_cdc_dma_rx_3_sample_rate,
+			cdc_dma_rx_sample_rate_get,
+			cdc_dma_rx_sample_rate_put),
+	SOC_ENUM_EXT("RX_CDC_DMA_RX_5 SampleRate",
+			rx_cdc_dma_rx_5_sample_rate,
+			cdc_dma_rx_sample_rate_get,
+			cdc_dma_rx_sample_rate_put),
+};
+
 static const struct snd_kcontrol_new msm_common_snd_controls[] = {
 	SOC_ENUM_EXT("USB_AUDIO_RX SampleRate", usb_rx_sample_rate,
 			usb_audio_rx_sample_rate_get,
@@ -4585,9 +4668,10 @@ static int msm_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 		break;
 
 	case MSM_BACKEND_DAI_WSA_CDC_DMA_TX_0:
+		idx = msm_cdc_dma_get_idx_from_beid(dai_link->id);
 		param_set_mask(params, SNDRV_PCM_HW_PARAM_FORMAT,
 				SNDRV_PCM_FORMAT_S32_LE);
-		rate->min = rate->max = SAMPLING_RATE_8KHZ;
+		rate->min = rate->max = cdc_dma_tx_cfg[idx].sample_rate;
 		channels->min = channels->max = msm_vi_feed_tx_ch;
 		break;
 
@@ -4688,10 +4772,11 @@ static int kona_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
 	int ret = 0;
 	int slot_width = TDM_SLOT_WIDTH_BITS;
-	int channels, slots = TDM_MAX_SLOTS;
+	int channels, slots;
 	unsigned int slot_mask, rate, clk_freq;
 	unsigned int *slot_offset;
 	struct tdm_dev_config *config;
+	struct msm_asoc_mach_data *pdata = NULL;
 	unsigned int path_dir = 0, interface = 0, channel_interface = 0;
 
 #if IS_ENABLED(CONFIG_SND_SOC_CS35L41)
@@ -4702,6 +4787,8 @@ static int kona_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 
 	pr_debug("%s: dai id = 0x%x\n", __func__, cpu_dai->id);
 
+	pdata = snd_soc_card_get_drvdata(rtd->card);
+	slots = pdata->tdm_max_slots;
 	if (cpu_dai->id < AFE_PORT_ID_TDM_PORT_RANGE_START) {
 		pr_err("%s: dai id 0x%x not supported\n",
 			__func__, cpu_dai->id);
@@ -4725,7 +4812,16 @@ static int kona_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 
 	config = ((struct tdm_dev_config *) tdm_cfg[interface]) +
 			(path_dir * TDM_PORT_MAX) + channel_interface;
+	if (!config) {
+		pr_err("%s: tdm config is NULL\n", __func__);
+		return -EINVAL;
+	}
+
 	slot_offset = config->tdm_slot_offset;
+	if (!slot_offset) {
+		pr_err("%s: slot offset is NULL\n", __func__);
+		return -EINVAL;
+	}
 
 	if (path_dir)
 		channels = tdm_tx_cfg[interface][channel_interface].channels;
@@ -5072,6 +5168,121 @@ static int msm_snd_cdc_dma_startup(struct snd_pcm_substream *substream)
 	return ret;
 }
 
+static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
+				u32 num_ch, u32 ch_mask)
+{
+	int i = 0;
+	int val = 0;
+	u8 dev_num = 0;
+	int ch_configured = 0;
+	int j = 0;
+	int n = 0;
+	char wsa_cdc_name[DEV_NAME_STR_LEN];
+	struct snd_soc_component *component = NULL;
+	struct snd_soc_dai_link *dai_link = rtd->dai_link;
+        struct msm_asoc_mach_data *pdata =
+			snd_soc_card_get_drvdata(rtd->card);
+
+	if (!pdata) {
+		pr_err("%s: pdata is NULL\n", __func__);
+		return;
+	}
+
+	if (!num_ch) {
+		pr_err("%s: channel count is 0\n", __func__);
+		return;
+	}
+
+	if (!pdata->get_wsa_dev_num) {
+		pr_err("%s: get_wsa_dev_num is NULL\n", __func__);
+		return;
+	}
+
+	if (!pdata->cps_config.spkr_dep_cfg) {
+		pr_debug("%s: spkr_dep_cfg is NULL\n", __func__);
+		return;
+	}
+
+	if (!pdata->cps_config.hw_reg_cfg.lpass_wr_cmd_reg_phy_addr ||
+	   !pdata->cps_config.hw_reg_cfg.lpass_rd_cmd_reg_phy_addr ||
+	   !pdata->cps_config.hw_reg_cfg.lpass_rd_fifo_reg_phy_addr) {
+		pr_err("%s: cps static configuration is not set\n", __func__);
+		return;
+	}
+
+	pdata->cps_config.lpass_hw_intf_cfg_mode = 1;
+
+	while (ch_configured < num_ch) {
+		if (!(ch_mask & (1 << i))) {
+			i++;
+			continue;
+		}
+
+		snprintf(wsa_cdc_name, sizeof(wsa_cdc_name), "wsa-codec.%d",
+			 i+1);
+
+		/* Use n to make sure both WSA components are retrieved */
+		/* When first WSA component is retrieved adjust looping
+		   variable such that the next time only the remaining part
+		   of the array is traversed */
+		for (j = n; j < rtd->card->num_aux_devs; j++)
+		{
+			if (msm_codec_conf[j].name_prefix != NULL ) {
+				if (strstr(msm_codec_conf[j].name_prefix,
+					"Left")) {
+					component = soc_find_component_locked(
+						msm_aux_dev[j].codec_of_node,
+						NULL);
+					n = j+1;
+					break;
+				}
+				else if (strstr(msm_codec_conf[j].name_prefix,
+					"Right")) {
+					component = soc_find_component_locked(
+						msm_aux_dev[j].codec_of_node,
+						NULL);
+					n = j+1;
+					break;
+				}
+			}
+		}
+
+		if (!component) {
+			pr_err("%s: %s component is NULL\n", __func__,
+				wsa_cdc_name);
+			return;
+		}
+
+		dev_num = pdata->get_wsa_dev_num(component);
+		if (dev_num < 0 || dev_num > SWR_MAX_SLAVE_DEVICES) {
+			pr_err("%s: invalid slave dev num : %d\n", __func__,
+				dev_num);
+			return;
+		}
+
+		/* Clear stale dev num info */
+		pdata->cps_config.spkr_dep_cfg[i].vbatt_pkd_reg_addr &= 0xFFFF;
+		pdata->cps_config.spkr_dep_cfg[i].temp_pkd_reg_addr &= 0xFFFF;
+
+		val = 0;
+
+		/* bits 20:23 carry swr device number */
+		val |= dev_num << 20;
+
+		/* bits 24:27 carry read length in bytes */
+		val |= 1 << 24;
+
+		/* Update dev num in packed reg addr */
+		pdata->cps_config.spkr_dep_cfg[i].vbatt_pkd_reg_addr |= val;
+		pdata->cps_config.spkr_dep_cfg[i].temp_pkd_reg_addr |= val;
+		i++;
+		ch_configured++;
+	}
+
+	afe_set_cps_config(msm_get_port_id(dai_link->id),
+					&pdata->cps_config, ch_mask);
+}
+
 static int msm_snd_cdc_dma_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params)
 {
@@ -5119,6 +5330,11 @@ static int msm_snd_cdc_dma_hw_params(struct snd_pcm_substream *substream,
 				goto err;
 			}
 
+			if (dai_link->id == MSM_BACKEND_DAI_WSA_CDC_DMA_RX_0 ||
+			    dai_link->id == MSM_BACKEND_DAI_WSA_CDC_DMA_RX_1) {
+				set_cps_config(rtd, user_set_rx_ch,
+						rx_ch_cdc_dma);
+			}
 		}
 		break;
 		}
@@ -5748,6 +5964,10 @@ static int msm_int_audrx_init(struct snd_soc_pcm_runtime *rtd)
 #if IS_ENABLED(CONFIG_SND_SOC_WSA)
 	struct snd_soc_component *aux_comp;
 #endif
+	struct platform_device *pdev = NULL;
+	int i = 0;
+	bool is_wcd937x_used = false;
+	char *data = NULL;
 	struct msm_asoc_mach_data *pdata =
 				snd_soc_card_get_drvdata(rtd->card);
 
@@ -5830,21 +6050,56 @@ static int msm_int_audrx_init(struct snd_soc_pcm_runtime *rtd)
 						WSA_MACRO_SPKR_MODE_1);
 				wsa_macro_set_spkr_gain_offset(component,
 						WSA_MACRO_GAIN_OFFSET_M1P5_DB);
+			} else if (aux_comp->name != NULL && (
+				!strcmp(aux_comp->name, WSA8815_NAME_1) ||
+		    		!strcmp(aux_comp->name, WSA8815_NAME_2))) {
+				wsa_macro_set_spkr_mode(component,
+						WSA_MACRO_SPKR_MODE_DEFAULT);
 			}
 		}
 #endif
-		if (pdata->lito_v2_enabled) {
-			/*
-			 * Enable tx data line3 for saipan version v2 amd
-			 * write corresponding lpi register.
-			 */
-			bolero_set_port_map(component, ARRAY_SIZE(sm_port_map_v2),
-					sm_port_map_v2);
-		} else {
-			bolero_set_port_map(component, ARRAY_SIZE(sm_port_map),
-					sm_port_map);
+	}
+
+	for (i = 0; i < rtd->card->num_aux_devs; i++)
+	{
+		if (msm_aux_dev[i].name != NULL ) {
+			if (strstr(msm_aux_dev[i].name, "wsa"))
+				continue;
+		}
+
+		if (msm_aux_dev[i].codec_of_node) {
+			pdev = of_find_device_by_node(
+					msm_aux_dev[i].codec_of_node);
+
+			if (pdev)
+				data = (char*) of_device_get_match_data(
+								&pdev->dev);
+			if (data != NULL) {
+				if (!strncmp(data, "wcd937x",
+						sizeof("wcd937x"))) {
+					is_wcd937x_used = true;
+					break;
+				}
+			}
 		}
 	}
+
+	if (is_wcd937x_used) {
+		bolero_set_port_map(component,
+				    ARRAY_SIZE(sm_port_map_wcd937x),
+				    sm_port_map_wcd937x);
+	} else if (pdata->lito_v2_enabled) {
+		/*
+		 * Enable tx data line3 for saipan version v2 and
+		 * write corresponding lpi register.
+		 */
+		bolero_set_port_map(component, ARRAY_SIZE(sm_port_map_v2),
+				    sm_port_map_v2);
+	} else {
+		bolero_set_port_map(component, ARRAY_SIZE(sm_port_map),
+				    sm_port_map);
+	}
+
 	card = rtd->card->snd_card;
 	if (!pdata->codec_root) {
 		entry = snd_info_create_subdir(card->module, "codecs",
@@ -7081,6 +7336,19 @@ static struct snd_soc_dai_link msm_spi_dai_links[] = {
 		     SND_SOC_DPCM_TRIGGER_POST},
 	},
 	{
+	 .name = "ZLatency Capture",
+	 .stream_name = "ZLatency Capture",
+	 .cpu_dai_name = "rt5514-dsp-fe-dai4",
+	 .platform_name = "spi0.0",
+	 .codec_name = "msm-stub-codec.1",
+	 .codec_dai_name = "msm-stub-tx",
+	 .ignore_suspend = 1,
+	 .dynamic = 1,
+	 .dpcm_capture = 1,
+	 .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+		     SND_SOC_DPCM_TRIGGER_POST},
+	},
+	{
 	 .name = "SPI PCM 1",
 	 .stream_name = "SPI Capture",
 	 .cpu_dai_name = "rt5514-dsp-be-dai1",
@@ -7106,6 +7374,17 @@ static struct snd_soc_dai_link msm_spi_dai_links[] = {
 	 .name = "SPI PCM 3",
 	 .stream_name = "SPI Capture 3",
 	 .cpu_dai_name = "rt5514-dsp-be-dai3",
+	 .platform_name = "spi0.0",
+	 .codec_name = "msm-stub-codec.1",
+	 .codec_dai_name = "msm-stub-tx",
+	 .ignore_suspend = 1,
+	 .dpcm_capture = 1,
+	 .no_pcm = 1,
+	},
+	{
+	 .name = "SPI PCM 4",
+	 .stream_name = "SPI Capture 4",
+	 .cpu_dai_name = "rt5514-dsp-be-dai4",
 	 .platform_name = "spi0.0",
 	 .codec_name = "msm-stub-codec.1",
 	 .codec_dai_name = "msm-stub-tx",
@@ -8452,18 +8731,24 @@ static int msm_aux_codec_init(struct snd_soc_component *component)
 		}
 		pdata->codec_root = entry;
 	}
-	wcd938x_info_create_codec_entry(pdata->codec_root, component);
-
-	codec_variant = wcd938x_get_codec_variant(component);
-	dev_dbg(component->dev, "%s: variant %d\n", __func__, codec_variant);
-	if (codec_variant == WCD9380)
+	if (!strncmp(component->driver->name, "wcd937x", 7)) {
+		wcd937x_info_create_codec_entry(pdata->codec_root, component);
 		ret = snd_soc_add_component_controls(component,
-					msm_int_wcd9380_snd_controls,
-					ARRAY_SIZE(msm_int_wcd9380_snd_controls));
-	else if (codec_variant == WCD9385)
-		ret = snd_soc_add_component_controls(component,
-					msm_int_wcd9385_snd_controls,
-					ARRAY_SIZE(msm_int_wcd9385_snd_controls));
+					msm_int_wcd937x_snd_controls,
+					ARRAY_SIZE(msm_int_wcd937x_snd_controls));
+	} else {
+		wcd938x_info_create_codec_entry(pdata->codec_root, component);
+		codec_variant = wcd938x_get_codec_variant(component);
+		dev_dbg(component->dev, "%s: variant %d\n", __func__, codec_variant);
+		if (codec_variant == WCD9380)
+			ret = snd_soc_add_component_controls(component,
+						msm_int_wcd9380_snd_controls,
+						ARRAY_SIZE(msm_int_wcd9380_snd_controls));
+		else if (codec_variant == WCD9385)
+			ret = snd_soc_add_component_controls(component,
+						msm_int_wcd9385_snd_controls,
+						ARRAY_SIZE(msm_int_wcd9385_snd_controls));
+	}
 
 	if (ret < 0) {
 		dev_err(component->dev, "%s: add codec specific snd controls failed: %d\n",
@@ -8476,7 +8761,10 @@ mbhc_cfg_cal:
 	if (!mbhc_calibration)
 		return -ENOMEM;
 	wcd_mbhc_cfg.calibration = mbhc_calibration;
-	ret = wcd938x_mbhc_hs_detect(component, &wcd_mbhc_cfg);
+	if (!strncmp(component->driver->name, "wcd937x", 7))
+		ret = wcd937x_mbhc_hs_detect(component, &wcd_mbhc_cfg);
+	else
+		ret = wcd938x_mbhc_hs_detect(component, &wcd_mbhc_cfg);
 	if (ret) {
 		dev_err(component->dev, "%s: mbhc hs detect failed, err:%d\n",
 			__func__, ret);
@@ -8518,7 +8806,7 @@ static int msm_init_aux_dev(struct platform_device *pdev,
 		goto codec_aux_dev;
 	}
 	if (wsa_max_devs == 0) {
-		dev_warn(&pdev->dev,
+		dev_info(&pdev->dev,
 			 "%s: Max WSA devices is 0 for this target?\n",
 			 __func__);
 		goto codec_aux_dev;
@@ -8528,7 +8816,7 @@ static int msm_init_aux_dev(struct platform_device *pdev,
 	wsa_dev_cnt = of_count_phandle_with_args(pdev->dev.of_node,
 						 "qcom,wsa-devs", NULL);
 	if (wsa_dev_cnt == -ENOENT) {
-		dev_warn(&pdev->dev, "%s: No wsa device defined in DT.\n",
+		dev_info(&pdev->dev, "%s: No wsa device defined in DT.\n",
 			 __func__);
 		goto err;
 	} else if (wsa_dev_cnt <= 0) {
@@ -8591,7 +8879,7 @@ static int msm_init_aux_dev(struct platform_device *pdev,
 			ret = -EINVAL;
 			goto err;
 		}
-		if (soc_find_component(wsa_of_node, NULL)) {
+		if (soc_find_component_locked(wsa_of_node, NULL)) {
 			/* WSA device registered with ALSA core */
 			wsa881x_dev_info[found].of_node = wsa_of_node;
 			wsa881x_dev_info[found].index = i;
@@ -8688,7 +8976,7 @@ codec_aux_dev:
 			ret = -EINVAL;
 			goto err;
 		}
-		if (soc_find_component(aux_codec_of_node, NULL)) {
+		if (soc_find_component_locked(aux_codec_of_node, NULL)) {
 			/* AUX codec registered with ALSA core */
 			aux_cdc_dev_info[codecs_found].of_node =
 						aux_codec_of_node;
@@ -8961,6 +9249,115 @@ int codec_state(void)
 }
 #endif
 
+static void parse_cps_configuration(struct platform_device *pdev,
+			struct msm_asoc_mach_data *pdata)
+{
+	int ret = 0;
+	int i = 0, j = 0;
+	u32 dt_values[MAX_CPS_LEVELS];
+
+	if (!pdev || !pdata || !pdata->wsa_max_devs)
+		return;
+
+	pdata->get_wsa_dev_num = wsa883x_codec_get_dev_num;
+	pdata->cps_config.hw_reg_cfg.num_spkr = pdata->wsa_max_devs;
+
+	ret = of_property_read_u32_array(pdev->dev.of_node,
+				"qcom,cps_reg_phy_addr", dt_values,
+				sizeof(dt_values)/sizeof(dt_values[0]));
+	if (ret) {
+		dev_dbg(&pdev->dev, "%s: could not find %s entry in dt\n",
+			__func__, "qcom,cps_reg_phy_addr");
+	} else {
+		pdata->cps_config.hw_reg_cfg.lpass_wr_cmd_reg_phy_addr =
+								dt_values[0];
+		pdata->cps_config.hw_reg_cfg.lpass_rd_cmd_reg_phy_addr =
+								dt_values[1];
+		pdata->cps_config.hw_reg_cfg.lpass_rd_fifo_reg_phy_addr =
+								dt_values[2];
+	}
+
+	ret = of_property_read_u32_array(pdev->dev.of_node,
+				"qcom,cps_threshold_levels", dt_values,
+				sizeof(dt_values)/sizeof(dt_values[0]) - 1);
+	if (ret) {
+		dev_dbg(&pdev->dev, "%s: could not find %s entry in dt\n",
+			__func__, "qcom,cps_threshold_levels");
+	} else {
+		pdata->cps_config.hw_reg_cfg.vbatt_lower2_threshold =
+								dt_values[0];
+		pdata->cps_config.hw_reg_cfg.vbatt_lower1_threshold =
+								dt_values[1];
+	}
+
+	pdata->cps_config.spkr_dep_cfg = devm_kzalloc(&pdev->dev,
+				    sizeof(struct lpass_swr_spkr_dep_cfg_t)
+				    * pdata->wsa_max_devs, GFP_KERNEL);
+	if (!pdata->cps_config.spkr_dep_cfg) {
+		dev_err(&pdev->dev, "%s: spkr dep cfg alloc failed\n", __func__);
+		return;
+	}
+	ret = of_property_read_u32_array(pdev->dev.of_node,
+				"qcom,cps_wsa_vbatt_temp_reg_addr", dt_values,
+				sizeof(dt_values)/sizeof(dt_values[0]) - 1);
+	if (ret) {
+		dev_dbg(&pdev->dev, "%s: could not find %s entry in dt\n",
+			__func__, "qcom,cps_wsa_vbatt_temp_reg_addr");
+	} else {
+		for (i = 0; i < pdata->wsa_max_devs; i++) {
+			pdata->cps_config.spkr_dep_cfg[i].vbatt_pkd_reg_addr =
+								dt_values[0];
+			pdata->cps_config.spkr_dep_cfg[i].temp_pkd_reg_addr =
+								dt_values[1];
+		}
+	}
+
+	ret = of_property_read_u32_array(pdev->dev.of_node,
+				"qcom,cps_normal_values", dt_values,
+				sizeof(dt_values)/sizeof(dt_values[0]));
+	if (ret) {
+		dev_dbg(&pdev->dev, "%s: could not find %s entry in dt\n",
+			__func__, "qcom,cps_normal_values");
+	} else {
+		for (i = 0; i < pdata->wsa_max_devs; i++) {
+			for (j = 0; j < MAX_CPS_LEVELS; j++) {
+				pdata->cps_config.spkr_dep_cfg[i].
+					value_normal_thrsd[j] = dt_values[j];
+			}
+		}
+	}
+
+	ret = of_property_read_u32_array(pdev->dev.of_node,
+				"qcom,cps_lower1_values", dt_values,
+				sizeof(dt_values)/sizeof(dt_values[0]));
+	if (ret) {
+		dev_dbg(&pdev->dev, "%s: could not find %s entry in dt\n",
+			__func__, "qcom,cps_lower1_values");
+	} else {
+		for (i = 0; i < pdata->wsa_max_devs; i++) {
+			for (j = 0; j < MAX_CPS_LEVELS; j++) {
+				pdata->cps_config.spkr_dep_cfg[i].
+					value_low1_thrsd[j] = dt_values[j];
+			}
+		}
+	}
+
+	ret = of_property_read_u32_array(pdev->dev.of_node,
+				"qcom,cps_lower2_values", dt_values,
+				sizeof(dt_values)/sizeof(dt_values[0]));
+	if (ret) {
+		dev_dbg(&pdev->dev, "%s: could not find %s entry in dt\n",
+			__func__, "qcom,cps_lower2_values");
+	} else {
+		for (i = 0; i < pdata->wsa_max_devs; i++) {
+			for (j = 0; j < MAX_CPS_LEVELS; j++) {
+				pdata->cps_config.spkr_dep_cfg[i].
+					value_low2_thrsd[j] = dt_values[j];
+			}
+		}
+	}
+}
+
 static int msm_asoc_machine_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = NULL;
@@ -9034,6 +9431,29 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 		 __func__, card->name);
 
 	spdev = pdev;
+
+	/* Get maximum WSA device count for this platform */
+	ret = of_property_read_u32(pdev->dev.of_node,
+				   "qcom,wsa-max-devs", &pdata->wsa_max_devs);
+	if (ret) {
+		dev_err(&pdev->dev, "%s: No DT match for wsa max devs\n",
+				__func__);
+		pdata->wsa_max_devs = 0;
+	}
+
+	ret = of_property_read_u32(pdev->dev.of_node, "qcom,tdm-max-slots",
+				   &pdata->tdm_max_slots);
+	if (ret) {
+		dev_err(&pdev->dev, "%s: No DT match for tdm max slots\n",
+				__func__);
+	}
+
+	if ((pdata->tdm_max_slots <= 0) || (pdata->tdm_max_slots >
+	     TDM_MAX_SLOTS)) {
+		pdata->tdm_max_slots = TDM_MAX_SLOTS;
+		dev_err(&pdev->dev, "%s: Using default tdm max slot: %d\n",
+				__func__, pdata->tdm_max_slots);
+	}
 
 	pdata->hph_en1_gpio_p = of_parse_phandle(pdev->dev.of_node,
 						"qcom,hph-en1-gpio", 0);
@@ -9149,6 +9569,11 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "audio_hac-amp-gpios is not valid\n");
 	else
 		gpio_direction_output(pdata->hac_amp_gpio, 0);
+
+	/* parse cps configuration from dt */
+	if (of_property_read_bool(pdev->dev.of_node, "qcom,cps_reg_phy_addr"))
+		parse_cps_configuration(pdev, pdata);
+
 	/* Register LPASS audio hw vote */
 	lpass_audio_hw_vote = devm_clk_get(&pdev->dev, "lpass_audio_hw_vote");
 	if (IS_ERR(lpass_audio_hw_vote)) {

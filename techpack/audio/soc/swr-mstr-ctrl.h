@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _SWR_WCD_CTRL_H
@@ -51,6 +51,7 @@ enum {
 	SWR_MSTR_UP,
 	SWR_MSTR_DOWN,
 	SWR_MSTR_SSR,
+	SWR_MSTR_SSR_RESET,
 };
 
 enum swrm_pm_state {
@@ -108,7 +109,6 @@ struct swr_ctrl_platform_data {
 	int (*core_vote)(void *handle, bool enable);
 	int (*reg_irq)(void *handle, irqreturn_t(*irq_handler)(int irq,
 			void *data), void *swr_handle, int type);
-	int (*pinctrl_setup)(void *handle, bool enable);
 };
 
 struct swr_mstr_ctrl {
@@ -141,7 +141,6 @@ struct swr_mstr_ctrl {
 	int (*core_vote)(void *handle, bool enable);
 	int (*reg_irq)(void *handle, irqreturn_t(*irq_handler)(int irq,
 			void *data), void *swr_handle, int type);
-	int (*pinctrl_setup)(void *handle, bool enable);
 	int irq;
 	int wake_irq;
 	int version;
@@ -167,10 +166,9 @@ struct swr_mstr_ctrl {
 	u32 clk_stop_mode0_supp;
 	struct work_struct wakeup_work;
 	u32 ipc_wakeup;
-	u32 dmic_sva;
 	bool dev_up;
 	bool ipc_wakeup_triggered;
-	bool aud_core_err;
+	bool req_clk_switch;
 	struct pm_qos_request pm_qos_req;
 	enum swrm_pm_state pm_state;
 	wait_queue_head_t pm_wq;
@@ -185,6 +183,10 @@ struct swr_mstr_ctrl {
 	int aud_core_clk_en;
 	int clk_src;
 	u32 disable_div2_clk_switch;
+	u32 rd_fifo_depth;
+	u32 wr_fifo_depth;
+	bool enable_slave_irq;
+	bool clk_stop_wakeup;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_swrm_dent;
 	struct dentry *debugfs_peek;
