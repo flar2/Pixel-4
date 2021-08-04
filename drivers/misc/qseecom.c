@@ -2,7 +2,7 @@
 /*
  * QTI Secure Execution Environment Communicator (QSEECOM) driver
  *
- * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  */
 
 #define pr_fmt(fmt) "QSEECOM: %s: " fmt, __func__
@@ -2031,8 +2031,8 @@ static int qseecom_set_client_mem_param(struct qseecom_dev_handle *data,
 
 	if ((req.ifd_data_fd <= 0) || (req.virt_sb_base == NULL) ||
 					(req.sb_len == 0)) {
-		pr_err("Invalid input(s)ion_fd(%d), sb_len(%d), vaddr(0x%pK)\n",
-			req.ifd_data_fd, req.sb_len, req.virt_sb_base);
+		pr_err("Invalid input(s)ion_fd(%d), sb_len(%d)\n",
+			req.ifd_data_fd, req.sb_len);
 		return -EFAULT;
 	}
 	if (!access_ok(VERIFY_WRITE, (void __user *)req.virt_sb_base,
@@ -2640,6 +2640,11 @@ err_resp:
 			pr_warn("get cback req app_id = %d, resp->data = %d\n",
 				data->client.app_id, resp->data);
 			resp->resp_type = SMCINVOKE_RESULT_INBOUND_REQ_NEEDED;
+			/* We are here because scm call sent to TZ has requested
+			 * for another callback request. This call has been a
+			 * success and hence setting result = 0
+			 */
+			resp->result = 0;
 			break;
 		default:
 			pr_err("fail:resp res= %d,app_id = %d,lstr = %d\n",
@@ -3053,8 +3058,9 @@ static int __qseecom_unload_app(struct qseecom_dev_handle *data,
 			sizeof(struct qseecom_unload_app_ireq),
 			&resp, sizeof(resp));
 	if (ret) {
-		pr_err("scm_call to unload app (id = %d) failed\n", app_id);
-		return -EFAULT;
+		pr_err("scm_call to unload app (id = %d) failed ret: %d\n",
+			app_id, ret);
+		return ret;
 	}
 	switch (resp.result) {
 	case QSEOS_RESULT_SUCCESS:
@@ -3720,8 +3726,8 @@ static int __qseecom_send_cmd(struct qseecom_dev_handle *data,
 				(uint32_t)(__qseecom_uvirt_to_kphys(
 				data, (uintptr_t)req->resp_buf));
 		} else {
-			send_data_req.req_ptr = (uint32_t)req->cmd_req_buf;
-			send_data_req.rsp_ptr = (uint32_t)req->resp_buf;
+			send_data_req.req_ptr = (uintptr_t)req->cmd_req_buf;
+			send_data_req.rsp_ptr = (uintptr_t)req->resp_buf;
 		}
 
 		send_data_req.req_len = req->cmd_req_len;
@@ -5272,8 +5278,10 @@ int qseecom_send_command(struct qseecom_handle *handle, void *send_buf,
 		}
 		perf_enabled = true;
 	}
-	if (!strcmp(data->client.app_name, "securemm"))
+	if (!strcmp(data->client.app_name, "securemm") ||
+	    !strcmp(data->client.app_name, "slateapp")) {
 		data->use_legacy_cmd = true;
+	}
 
 	dmac_flush_range(req.cmd_req_buf, req.cmd_req_buf + req.cmd_req_len);
 
@@ -5348,6 +5356,13 @@ int qseecom_process_listener_from_smcinvoke(struct scm_desc *desc)
 		return -EINVAL;
 	}
 
+	/*
+	 * smcinvoke expects result in scm call resp.ret[1] and type in ret[0],
+	 * while qseecom expects result in ret[0] and type in ret[1].
+	 * To simplify API interface and code changes in smcinvoke, here
+	 * internally switch result and resp_type to let qseecom work with
+	 * smcinvoke and upstream scm driver protocol.
+	 */
 	resp.result = desc->ret[0];	/*req_cmd*/
 	resp.resp_type = desc->ret[1]; /*incomplete:unused;blocked:session_id*/
 	resp.data = desc->ret[2];	/*listener_id*/
@@ -5368,8 +5383,8 @@ int qseecom_process_listener_from_smcinvoke(struct scm_desc *desc)
 		pr_err("Failed on cmd %d for lsnr %d session %d, ret = %d\n",
 			(int)desc->ret[0], (int)desc->ret[2],
 			(int)desc->ret[1], ret);
-	desc->ret[0] = resp.result;
-	desc->ret[1] = resp.resp_type;
+	desc->ret[0] = resp.resp_type;
+	desc->ret[1] = resp.result;
 	desc->ret[2] = resp.data;
 	return ret;
 }

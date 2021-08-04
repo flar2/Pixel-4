@@ -147,6 +147,7 @@ enum {
 	UFS_ERR_CLEAR_PEND_XFER_TM,
 	UFS_ERR_INT_FATAL_ERRORS,
 	UFS_ERR_INT_UIC_ERROR,
+	UFS_ERR_HOST_RESET,
 
 	/* other errors */
 	UFS_ERR_HIBERN8_ENTER,
@@ -497,6 +498,7 @@ struct ufs_clk_gating {
 	struct device_attribute delay_perf_attr;
 	struct device_attribute enable_attr;
 	bool is_enabled;
+	bool gate_wk_in_process;
 	int active_reqs;
 	struct workqueue_struct *clk_gating_workq;
 };
