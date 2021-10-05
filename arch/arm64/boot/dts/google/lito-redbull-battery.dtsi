@@ -55,11 +55,12 @@
 			   "batt-id";
 	qcom,cl-feedback-on;
 	qcom,qg-ext-sns;
-	qcom,cl-max-increment = <5>;
-	qcom,cl-max-decrement = <10>;
+	qcom,cl-max-increment = <3>;
+	qcom,cl-max-decrement = <5>;
 	qcom,cl-min-limit = <500>;
 	qcom,cl-max-limit = <0>;
 	qcom,cl-min-delta-batt-soc = <10>;
+	google,cl-degrade = <50>;
 	qcom,cl-wt-enable;
 	qcom,vbatt-cutoff-mv = <3300>;
 	qcom,vbatt-low-mv = <3500>;
@@ -204,13 +205,14 @@
 		google,bd-resume-temp = <290>;
 		google,bd-resume-soc = <50>;
 		google,bd-trigger-time = <21600>; /* 6 hours */
-		google,bd-trigger-temp = <320>;
+		google,bd-trigger-temp = <350>;
 		google,bd-trigger-voltage = <4320000>;
 		google,bd-recharge-voltage = <4300000>;
 		google,bd-drainto-soc = <80>;
 		google,bd-recharge-soc = <79>;
 		/* Enable TEMP-DEFEND */
 		google,bd-temp-enable;
+		google,bd-temp-dry-run;
 	};
 
 	google_charger_pd_5v: google,charger_pd_5v {
