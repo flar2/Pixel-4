@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019, 2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -1395,4 +1395,15 @@ dp_get_vdev_from_soc_vdev_id_wifi3(struct dp_soc *soc,
 
 }
 
+/**
+ * dp_peer_flush_frags() - Flush all fragments for a particular
+ *  peer
+ * @pdev - dp pdev handle
+ * @vdev_id - vdev id
+ * @peer_addr - peer mac address
+ *
+ * Return: None
+ */
+void dp_peer_flush_frags(struct cdp_pdev *pdev, uint8_t vdev_id,
+			 uint8_t *peer_mac);
 #endif /* #ifndef _DP_INTERNAL_H_ */

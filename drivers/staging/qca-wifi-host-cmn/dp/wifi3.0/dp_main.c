@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2021 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -9975,6 +9975,7 @@ static struct cdp_peer_ops dp_ops_peer = {
 	.peer_get_peer_mac_addr = dp_peer_get_peer_mac_addr,
 	.get_vdev_for_peer = dp_get_vdev_for_peer,
 	.get_peer_state = dp_get_peer_state,
+	.peer_flush_frags = dp_peer_flush_frags,
 };
 #endif
 
