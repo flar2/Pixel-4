@@ -304,7 +304,7 @@ static void vibrator_enable(
 		queue_work(drv2624->drv2624_wq, &drv2624->work);
 }
 
-void set_vibrate()
+void set_vibrate(void)
 {
 	queue_work(drv2624_plat_data->drv2624_wq, &drv2624_plat_data->work);
 	msleep(30);
