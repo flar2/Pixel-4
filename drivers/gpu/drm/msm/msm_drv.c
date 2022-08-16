@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019, 2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -50,6 +50,7 @@
 #include "msm_kms.h"
 #include "sde_wb.h"
 #include "sde_dbg.h"
+#include <drm/drm_client.h>
 
 /*
  * MSM driver version:
@@ -312,6 +313,7 @@ static int msm_drm_uninit(struct device *dev)
 	drm_mode_config_cleanup(ddev);
 
 	if (priv->registered) {
+		drm_client_dev_unregister(ddev);
 		drm_dev_unregister(ddev);
 		priv->registered = false;
 	}
@@ -428,7 +430,7 @@ static int msm_init_vram(struct drm_device *dev)
 		of_node_put(node);
 		if (ret)
 			return ret;
-		size = r.end - r.start;
+		size = r.end - r.start + 1;
 		DRM_INFO("using VRAM carveout: %lx@%pa\n", size, &r.start);
 
 		/* if we have no IOMMU, then we need to use carveout allocator.
@@ -1706,6 +1708,13 @@ static int msm_release(struct inode *inode, struct file *filp)
 		kfree(node);
 	}
 
+	msm_preclose(dev, file_priv);
+
+       /**
+	* Handle preclose operation here for removing fb's whose
+	* refcount > 1. This operation is not triggered from upstream
+	* drm as msm_driver does not support DRIVER_LEGACY feature.
+	*/
 	ret = drm_release(inode, filp);
 	filp->private_data = NULL;
 end:
@@ -1864,7 +1873,6 @@ static struct drm_driver msm_driver = {
 				DRIVER_ATOMIC |
 				DRIVER_MODESET,
 	.open               = msm_open,
-	.preclose           = msm_preclose,
 	.postclose          = msm_postclose,
 	.lastclose          = msm_lastclose,
 	.irq_handler        = msm_irq,
